@@ -106,14 +106,20 @@ Each session is **fully independent** — you can close the chat between session
 
 ## Data Sources
 
-| Source | Token Cost | Setup | Verdict |
-|--------|-----------|-------|---------|
-| **NotebookLM notebook** (filings pre-loaded) | Very low — NLM absorbs PDFs, Claude only reads answers | One-time OAuth (5 min) | ✅ Best path |
-| **Excel** (historical IS/BS/CF) + short PDF excerpts | Low | None | ✅ Good |
-| **Web fallback** (Sina / Yahoo Finance) | Low | None | ✅ Fallback |
-| **Full PDF upload** (annual report, prospectus) | 🔴 Very high — 200+ page filings burn through context fast | None | ⚠️ Avoid on Pro |
+| Priority | Source | Setup | Token Cost | Notes |
+|----------|--------|-------|-----------|-------|
+| ✅ **1st choice** | **Excel** (historical IS/BS/CF already structured) | None | Low | Fastest to start — upload and go |
+| ✅ **2nd choice** | **NotebookLM notebook** (annual reports / filings pre-loaded) | Two steps (see below) | Very low | Higher assumption quality — worth the setup |
+| ✅ **Fallback** | **Web** (Sina / Yahoo Finance) | None | Low | Automatic — always runs as cross-check layer |
+| ⚠️ **Avoid on Pro** | **Full PDF upload** (complete annual report, prospectus) | None | 🔴 Very high | 200+ page filings consume context fast |
 
-**NotebookLM one-time auth setup (~5 min):**
+**Why Excel first?** No auth, no pre-loading — just upload a spreadsheet with 3–5 years of IS/BS/CF and the skill reads it directly. Supplement with short PDF excerpts (earnings release key pages) if you have them.
+
+**Why NLM second — and why it's worth it?** NotebookLM's 12-question parallel batch extracts far richer operational intelligence than structured financials alone: segment drivers, management guidance, capex plans, working capital commentary, competitive dynamics. This directly feeds the Assumptions tab, resulting in meaningfully better forecast quality. The tradeoff is a two-step setup:
+
+1. **Upload your filings into NotebookLM first** — annual reports, quarterly reports, prospectus, or any sell-side research you find useful. NLM handles the PDF parsing so Claude never has to read the raw files.
+2. **One-time OAuth auth** (~5 min, done once):
+
 ```bash
 pip install notebooklm
 python3 -c "
@@ -128,8 +134,6 @@ asyncio.run(auth())
 # Browser opens → Google login → session saved to ~/.notebooklm/storage_state.json
 # Re-auth needed only when session expires (~7 days)
 ```
-
-**If you skip NLM:** upload a structured **Excel with 3–5 years of IS/BS/CF** as your primary source, and supplement with short PDF excerpts (earnings release key pages, not full filings). This keeps token consumption low while still getting good data quality.
 
 ---
 
