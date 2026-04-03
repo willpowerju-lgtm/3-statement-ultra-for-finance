@@ -1,3 +1,8 @@
+3-Statements-Ultra — Public Edition
+Version: 4.7 · Public Edition
+Build date: April 2026
+Compatibility: Claude Code / Cowork (Anthropic)
+
 What This Skill Does
 Builds a complete, institutional-grade three-statement financial model (Income Statement, Balance Sheet, Cash Flow Statement) in Excel from scratch — with full formula linkage, zero hardcoded forecast cells, and a 9-step QC validation suite.
 Output quality targets: IPO prospectus / equity research initiating coverage.
@@ -101,6 +106,15 @@ Q: What if BS CHECK ≠ 0 after Session C?
 This is expected and correct. BS Cash is a placeholder (0) until Session D back-fills it from CF Ending Cash. Do not try to force-balance BS in Session C.
 Q: Does this work for US GAAP companies (e.g., NYSE/NASDAQ-listed)?
 Yes. Use ticker = "TICKER" format (e.g. "AAPL") in Phase 0. The skill detects IFRS/US GAAP from the source and applies the correct IS template.
+
+What Was Removed in the Public Edition
+This is a sanitized version of the original private skill. The following have been removed or replaced:
+
+Bark push notification module — bark-notify.md and all bark() function calls removed. The original skill sent push notifications to a private device during long-running sessions; this is not needed for general use.
+Internal session paths — hardcoded internal deployment paths (e.g. Python package install locations specific to the original environment) replaced with standard pip install instructions.
+Internal data pipeline references — references to a proprietary external data-validator script replaced with a self-contained openpyxl implementation in R11.
+
+All core modeling logic, QC checks, templates, and session protocols are unchanged.
 
 License
 This skill is shared for personal and research use. No warranty is provided. Financial models produced by this skill should be independently verified before use in investment decisions.
