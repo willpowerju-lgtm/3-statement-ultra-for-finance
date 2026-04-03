@@ -1,5 +1,7 @@
 # 3-Statements-Ultra — Public Edition
 
+**English** | [中文](README.zh.md)
+
 **Version:** 4.7 · Public Edition
 **Build date:** April 2026
 **Compatibility:** Claude Code / Cowork (Anthropic)
