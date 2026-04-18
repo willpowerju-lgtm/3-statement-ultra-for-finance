@@ -2,8 +2,8 @@
 
 **English** | [中文](README.zh.md)
 
-**Version:** 4.7 · Public Edition
-**Build date:** April 2026
+**Version:** 4.8 · Public Edition
+**Build date:** April 2026 (Claude Code first-class install)
 **Compatibility:** Claude Code / Cowork (Anthropic)
 
 ---
@@ -37,16 +37,64 @@ Python 3.9+ required.
 
 ## Installation
 
-### Cowork / Claude Code (skill file)
+The repo ships the skill in two forms: an unzipped `3-statements-ultra/` folder (for Claude Code) and a `3-statements-ultra-public.skill` zip bundle (for Cowork). Pick whichever matches your client.
 
-1. Download `3-statements-ultra-public.skill`
-2. In Cowork: **Settings → Skills → Install from file** → select the `.skill` file
-3. In Claude Code CLI: place the unzipped folder under your `.claude/skills/` directory
+### Claude Code — recommended (`git clone` + symlink)
 
-### Manual (Claude Code)
+This is the most convenient path: `git pull` picks up future updates automatically, no re-install needed.
 
 ```bash
-# Unzip the skill
+# 1. Clone anywhere you like (not inside ~/.claude/skills/)
+git clone https://github.com/willpowerju-lgtm/3-statement-ultra-for-finance.git
+cd 3-statement-ultra-for-finance
+
+# 2. Symlink the skill folder into Claude Code's skills directory
+# Linux / macOS:
+ln -s "$PWD/3-statements-ultra" ~/.claude/skills/3-statements-ultra
+
+# Windows (PowerShell — needs admin OR Developer Mode enabled):
+New-Item -ItemType SymbolicLink -Path "$HOME\.claude\skills\3-statements-ultra" -Target "$PWD\3-statements-ultra"
+```
+
+**Verify Claude Code picked it up:**
+
+```bash
+# In any Claude Code session:
+/skills
+# Expected: "3-statements-ultra" appears in the list
+```
+
+Then just trigger it from any session:
+
+```
+建个三表模型 for BABA
+# or
+build a 3-statement model for Tencent (0700.HK)
+```
+
+**Updating later:** `cd 3-statement-ultra-for-finance && git pull` — the symlink means Claude Code sees the new version immediately.
+
+### Claude Code — alternative (plain copy, no symlink)
+
+If you can't or don't want to create symlinks:
+
+```bash
+git clone https://github.com/willpowerju-lgtm/3-statement-ultra-for-finance.git
+cp -r 3-statement-ultra-for-finance/3-statements-ultra ~/.claude/skills/
+```
+
+You'll need to re-copy when the skill updates.
+
+### Cowork (`.skill` zip bundle)
+
+1. Download `3-statements-ultra-public.skill` from this repo (raw file or Releases).
+2. In Cowork: **Settings → Skills → Install from file** → select the `.skill` file.
+
+### Manual unzip (legacy Claude Code path)
+
+Still works if you prefer a zip over the folder:
+
+```bash
 unzip 3-statements-ultra-public.skill -d ~/.claude/skills/3-statements-ultra/
 ```
 
@@ -195,6 +243,8 @@ This is a sanitized version of the original private skill. The following have be
 - **Bark push notification module** — `bark-notify.md` and all `bark()` function calls removed. The original skill sent push notifications to a private device during long-running sessions; this is not needed for general use.
 - **Internal session paths** — hardcoded internal deployment paths (e.g. Python package install locations specific to the original environment) replaced with standard `pip install` instructions.
 - **Internal data pipeline references** — references to a proprietary external `data-validator` script replaced with a self-contained openpyxl implementation in R11.
+- **`WorkflowState` / `SessionLog` integration blocks** — the original skill's top and bottom blocks hooked into an internal workflow/audit-log system (fixed paths under `/tmp/repo/session-log/src` and `~/.claude/skills/session-log/`). These have no meaning outside that environment and were removed. Everything needed for the 5-session build flow lives in the Excel `_State` tab and the two sidecar files (`_model_log.md`, `_pending_links.json`).
+- **Internal tickers in examples** — portfolio-specific tickers (e.g. A-share / HK names the original author was covering) replaced with neutral public-company tickers (`BABA`, `0700.HK`, `600519.SS`, `PDD`).
 
 All core modeling logic, QC checks, templates, and session protocols are unchanged.
 

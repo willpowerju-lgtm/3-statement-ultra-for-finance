@@ -2,8 +2,8 @@
 
 [English](README.md) | **中文**
 
-**版本：** 4.7 · 公开版
-**发布日期：** 2026年4月
+**版本：** 4.8 · 公开版
+**发布日期：** 2026年4月（新增 Claude Code 一等公民支持）
 **兼容平台：** Claude Code / Cowork（Anthropic）
 
 ---
@@ -37,16 +37,65 @@ pip install notebooklm   # 可选 — 仅在使用 NotebookLM 作为数据源时
 
 ## 安装方式
 
-### Cowork / Claude Code（.skill 文件）
+仓库同时提供两种形态：解压后的 `3-statements-ultra/` 文件夹（给 Claude Code 用）和 `3-statements-ultra-public.skill` zip 包（给 Cowork 用）。挑对应你客户端的那一种即可。
 
-1. 下载 `3-statements-ultra.skill`
-2. Cowork 中：**Settings → Skills → Install from file** → 选择 `.skill` 文件
-3. Claude Code CLI：将解压后的文件夹放到 `.claude/skills/` 目录下
+### Claude Code — 推荐（git clone + 软链接）
 
-### 手动安装（Claude Code）
+这是最省心的路径：之后 `git pull` 就能自动拿到最新版本，不需要重装。
 
 ```bash
-unzip 3-statements-ultra.skill -d ~/.claude/skills/3-statements-ultra/
+# 1. 在任意位置 clone 仓库（不要直接 clone 到 ~/.claude/skills/ 里）
+git clone https://github.com/willpowerju-lgtm/3-statement-ultra-for-finance.git
+cd 3-statement-ultra-for-finance
+
+# 2. 把 skill 文件夹软链接到 Claude Code 的 skills 目录
+# Linux / macOS：
+ln -s "$PWD/3-statements-ultra" ~/.claude/skills/3-statements-ultra
+
+# Windows（PowerShell，需要管理员身份 或 启用开发者模式）：
+New-Item -ItemType SymbolicLink -Path "$HOME\.claude\skills\3-statements-ultra" -Target "$PWD\3-statements-ultra"
+```
+
+**验证 Claude Code 已识别：**
+
+```bash
+# 在任意 Claude Code session 里：
+/skills
+# 期望在列表中看到："3-statements-ultra"
+```
+
+然后在任意 session 触发即可：
+
+```
+建个三表模型 for BABA
+# 或
+build a 3-statement model for Tencent (0700.HK)
+```
+
+**后续更新：** `cd 3-statement-ultra-for-finance && git pull` —— 因为是软链接，Claude Code 立刻能看到新版本。
+
+### Claude Code — 替代方案（直接拷贝，不用软链接）
+
+如果你的环境不方便建软链接：
+
+```bash
+git clone https://github.com/willpowerju-lgtm/3-statement-ultra-for-finance.git
+cp -r 3-statement-ultra-for-finance/3-statements-ultra ~/.claude/skills/
+```
+
+更新时需要重新 cp 覆盖。
+
+### Cowork（.skill zip 包）
+
+1. 从本仓库（raw 文件或 Releases）下载 `3-statements-ultra-public.skill`。
+2. Cowork 中：**Settings → Skills → Install from file** → 选择 `.skill` 文件。
+
+### 手动解压（旧版 Claude Code 路径）
+
+如果你更喜欢解压 zip 而不是用文件夹：
+
+```bash
+unzip 3-statements-ultra-public.skill -d ~/.claude/skills/3-statements-ultra/
 ```
 
 ---
