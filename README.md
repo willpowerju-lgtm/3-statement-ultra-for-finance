@@ -102,7 +102,13 @@ unzip 3-statements-ultra-public.skill -d ~/.claude/skills/3-statements-ultra/
 
 ## Recommended Setup — User Preference
 
-**Before your first session**, add the following to your Claude user preferences (Settings → Profile → Custom Instructions, or your `CLAUDE.md` file). This prevents state loss after context compaction mid-session:
+**Before your first session**, add the Compaction Recovery Protocol below to your Claude user preferences. This prevents state loss if context compaction fires *mid-session* — skill auto-load only re-injects SKILL.md when a trigger phrase hits, so a compaction that happens while you're already deep in the model won't re-load it on its own. Without this protocol, the LLM may try to rebuild row numbers from memory and silently corrupt the model.
+
+Where to paste it depends on your client:
+
+- **Claude Code** → append to `~/.claude/CLAUDE.md` (or a project-level `CLAUDE.md`).
+- **Cowork** → Settings → Profile → Custom Instructions.
+- **Claude.ai** (web/desktop) → Settings → Profile → Custom Instructions.
 
 ```
 ## 3-Statements-Ultra — Compaction Recovery Protocol

@@ -102,7 +102,13 @@ unzip 3-statements-ultra-public.skill -d ~/.claude/skills/3-statements-ultra/
 
 ## 建议配置 — User Preference
 
-**第一次使用前**，将以下内容粘贴进 Claude 用户偏好设置（Settings → Profile → Custom Instructions，或你的 `CLAUDE.md` 文件）。这可以防止 Context Compaction 后丢失建模状态：
+**第一次使用前**，把下面这段"断点恢复协议"贴进 Claude 用户偏好。这是为了防止建模**中途**触发 context compaction 后状态丢失——skill auto-load 只在触发词命中时重新注入 SKILL.md，已经在建模中途发生的 compaction 不会自动重载。没有这段协议，LLM 可能凭记忆拼行号、静默污染模型。
+
+粘贴位置因客户端而异：
+
+- **Claude Code** → 追加到 `~/.claude/CLAUDE.md`（或你在用的项目级 `CLAUDE.md`）。
+- **Cowork** → Settings → Profile → Custom Instructions。
+- **Claude.ai**（网页/桌面）→ Settings → Profile → Custom Instructions。
 
 ```
 ## 3-Statements-Ultra — 断点恢复协议
