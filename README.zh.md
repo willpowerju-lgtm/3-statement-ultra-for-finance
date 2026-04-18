@@ -28,7 +28,7 @@
 
 ```bash
 pip install openpyxl yfinance pandas
-pip install notebooklm   # 可选 — 仅在使用 NotebookLM 作为数据源时需要
+pip install "notebooklm-py[browser]" && playwright install chromium   # 可选 — 仅在使用 NotebookLM 作为数据源时需要（见下方"推荐升级 — NLM"）
 ```
 
 需要 Python 3.9+。
@@ -172,22 +172,29 @@ Skill 会先问你有哪些数据来源，然后引导你逐步完成 5 个 Sess
 **为什么 NLM 次选，又说值得配置？** NotebookLM 的 12 题并发问答能提取远比结构化财务数据丰富得多的运营情报：分业务线拆分驱动因子、管理层指引原话、资本开支计划、营运资本管理逻辑、竞争格局分析。这些内容直接决定 Assumptions Tab 的质量，最终影响预测的可信度。代价是需要两步配置：
 
 1. **先自己往 NotebookLM 上传资料** — 年报、季报、招股书，或任何你认为有参考价值的卖方研报。NLM 负责解析 PDF，Claude 只需接收问答结果，不用直接处理原始文件。
-2. **一次性 OAuth 认证**（约 5 分钟，只需做一次）：
+2. **一次性 OAuth 认证**（约 5 分钟，只需做一次）。我们使用 [teng-lin/notebooklm-py](https://github.com/teng-lin/notebooklm-py) —— 一个非官方的 NotebookLM Python 客户端：
 
 ```bash
-pip install notebooklm
+pip install "notebooklm-py[browser]"
+playwright install chromium
+
+# CLI 认证 — 浏览器弹出，Google 登录，session 本地保存
+notebooklm login
+
+# 验证是否可用
 python3 -c "
 import asyncio
 from notebooklm import NotebookLMClient
-async def auth():
+async def check():
     async with await NotebookLMClient.from_storage() as client:
         nbs = await client.notebooks.list()
         print(f'认证成功 — 可访问 {len(nbs)} 个 notebook')
-asyncio.run(auth())
+asyncio.run(check())
 "
-# 浏览器弹出 → Google 登录 → session 保存到 ~/.notebooklm/storage_state.json
-# 约 7 天后 session 过期需重新认证
+# 约 7 天后 session 过期，重新执行 `notebooklm login` 即可
 ```
+
+> ⚠️ `notebooklm-py` 是非官方库，依赖未公开的 Google API，接口可能随时变动。用来做个人研究/原型没问题（本 skill 就是这个场景），不要拿它跑生产管线。
 
 ---
 

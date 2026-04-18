@@ -28,7 +28,7 @@ Key features:
 
 ```bash
 pip install openpyxl yfinance pandas
-pip install notebooklm   # optional — only if you use NotebookLM as a data source
+pip install "notebooklm-py[browser]" && playwright install chromium   # optional — only if you use NotebookLM as a data source (see "Recommended — Upgrade NLM" below)
 ```
 
 Python 3.9+ required.
@@ -172,22 +172,29 @@ Each session is **fully independent** — you can close the chat between session
 **Why NLM second — and why it's worth it?** NotebookLM's 12-question parallel batch extracts far richer operational intelligence than structured financials alone: segment drivers, management guidance, capex plans, working capital commentary, competitive dynamics. This directly feeds the Assumptions tab, resulting in meaningfully better forecast quality. The tradeoff is a two-step setup:
 
 1. **Upload your filings into NotebookLM first** — annual reports, quarterly reports, prospectus, or any sell-side research you find useful. NLM handles the PDF parsing so Claude never has to read the raw files.
-2. **One-time OAuth auth** (~5 min, done once):
+2. **One-time OAuth auth** (~5 min, done once). We use [teng-lin/notebooklm-py](https://github.com/teng-lin/notebooklm-py) — an unofficial Python client for NotebookLM:
 
 ```bash
-pip install notebooklm
+pip install "notebooklm-py[browser]"
+playwright install chromium
+
+# CLI auth — browser opens, Google login, session saved locally
+notebooklm login
+
+# Verify it works
 python3 -c "
 import asyncio
 from notebooklm import NotebookLMClient
-async def auth():
+async def check():
     async with await NotebookLMClient.from_storage() as client:
         nbs = await client.notebooks.list()
         print(f'Auth OK — {len(nbs)} notebooks accessible')
-asyncio.run(auth())
+asyncio.run(check())
 "
-# Browser opens → Google login → session saved to ~/.notebooklm/storage_state.json
-# Re-auth needed only when session expires (~7 days)
+# Re-auth when session expires (~7 days) by re-running `notebooklm login`
 ```
+
+> ⚠️ `notebooklm-py` is unofficial and relies on undocumented Google APIs that may change without notice. It's fine for personal research / prototyping (which is our use case here), but don't build production pipelines on it.
 
 ---
 
