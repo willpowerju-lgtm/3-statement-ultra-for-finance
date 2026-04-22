@@ -1,7 +1,7 @@
 ---
 name: 3-statements-ultra
 description: >
-  从零构建机构级三表模型（IS/BS/CF）— 完整公式联动、季度/半年/年频自适应、IFRS/US GAAP/中国准则。
+  从零构建机构级三表模型（IS/BS/CF）— 完整公式联动、美股/A股强制季度·港股强制半年度、IFRS/US GAAP/中国准则。
   触发词：三表模型、financial model、3-statement、建模、从零建模、收入预测。
   ❌ 填写已有模板请用 financial-analysis:3-statements
 ---
@@ -70,7 +70,7 @@ SESSION E  — Returns + Cross-check + Summary            (~15–20 min)
 ```
 State is preserved in the Excel `_State` tab between sessions. If a session is interrupted, the startup protocol automatically resumes from the last checkpoint.
 
-**Supported:** CN GAAP / IFRS / US GAAP · Quarterly / Semi-annual / Annual (auto-detected)
+**Supported:** CN GAAP / IFRS / US GAAP · US & A-share: Quarterly (forced) · HK: Semi-annual (forced)
 
 ---
 
@@ -305,7 +305,8 @@ build one tab, others build several. Never write all tabs at once within a sessi
 sections are added incrementally across sessions, with _State + sidecar files carrying state between them.
 
 ```
-PRE-FLIGHT  — NLM kickoff 问答 (首次运行必做，结果写入 _State)
+PRE-FLIGHT  — ① MARKET_GATE (mandatory first step, see below)
+              ② NLM kickoff 问答 (首次运行必做，结果写入 _State)
               └─ included in references/session-a.md
 
 SESSION A   — Raw_Info + Assumptions           → Read references/session-a.md
@@ -318,16 +319,108 @@ SESSION E   — Returns + Cross_Check + Summary  → Read references/session-e.m
                └─ verifies PENDING_LINKS = 0 before proceeding
 ```
 
+---
+
+## ██ MARKET_GATE — MANDATORY PRE-FLIGHT STEP ZERO ██
+## ██ Must execute before any model file is created. No exceptions. ██
+
+**Purpose:** Lock the listing venue and time granularity into `_State` before any column
+headers or data cells are written. All subsequent sessions read from `_State` — never
+re-derive or override. This prevents the #1 structural error: building quarterly columns
+for an HK name or semi-annual columns for a US/A-share name.
+
+### Step 0A — Ask (SESSION A first run only)
+
+Before creating the Excel file, ask the user ONE question:
+
+```
+"What market is this company listed on?
+  [1] US-listed (NYSE / NASDAQ / ADR)
+  [2] A-share (Shanghai / Shenzhen)
+  [3] HK-listed (HKEX main board / GEM)
+  [4] Dual-listed → specify primary listing venue"
+```
+
+Do NOT proceed until the user answers. Do NOT infer from the ticker symbol alone.
+
+### Step 0B — Write to _State (immediately after user confirms)
+
+```python
+MARKET_MAP = {
+    "US":  {"granularity": "quarterly",    "periods": ["Q1","Q2","Q3","Q4"]},
+    "A":   {"granularity": "quarterly",    "periods": ["Q1","Q2","Q3","Q4"]},
+    "HK":  {"granularity": "semi-annual",  "periods": ["H1","H2"]},
+}
+
+# user_answer is "US", "A", or "HK"
+market    = user_answer.upper()
+gran      = MARKET_MAP[market]["granularity"]
+periods   = MARKET_MAP[market]["periods"]
+
+write_state_key(wb, "MARKET",       market)           # e.g. "HK"
+write_state_key(wb, "GRANULARITY",  gran)             # e.g. "semi-annual"
+write_state_key(wb, "PERIODS",      ",".join(periods))# e.g. "H1,H2"
+write_state_key(wb, "MARKET_GATE",  "LOCKED")
+wb.save(filepath)
+print(f"✅ MARKET_GATE LOCKED — {market} / {gran} / {periods}")
+```
+
+### Step 0C — Gate enforcement function (used in EVERY session before writing column headers)
+
+```python
+def enforce_market_gate(state: dict) -> dict:
+    """Call this before writing any IS/BS/CF column headers. Raises if gate not set."""
+    gate   = state.get("MARKET_GATE", "")
+    market = state.get("MARKET", "")
+    gran   = state.get("GRANULARITY", "")
+    raw_p  = state.get("PERIODS", "")
+
+    if gate != "LOCKED" or not market or not gran or not raw_p:
+        raise RuntimeError(
+            "❌ MARKET_GATE not locked — run PRE-FLIGHT Step 0 before building any tab."
+        )
+
+    periods = raw_p.split(",")
+    valid = {
+        "US": ("quarterly",   ["Q1","Q2","Q3","Q4"]),
+        "A":  ("quarterly",   ["Q1","Q2","Q3","Q4"]),
+        "HK": ("semi-annual", ["H1","H2"]),
+    }
+    expected_gran, expected_periods = valid[market]
+    if gran != expected_gran or periods != expected_periods:
+        raise RuntimeError(
+            f"❌ MARKET_GATE mismatch — _State says {gran}/{periods} "
+            f"but {market} requires {expected_gran}/{expected_periods}. "
+            f"Do NOT proceed. Fix _State or restart PRE-FLIGHT."
+        )
+
+    print(f"✅ MARKET_GATE OK — {market} / {gran} / {periods}")
+    return {"market": market, "granularity": gran, "periods": periods}
+```
+
+**Usage in SESSION B/C/D (before writing any column header row):**
+```python
+state  = read_state(wb)
+mgate  = enforce_market_gate(state)   # raises on any violation
+periods = mgate["periods"]            # ["Q1","Q2","Q3","Q4"] or ["H1","H2"]
+# ... use `periods` to build column headers — never hardcode "Q1" etc.
+```
+
+---
+
 **Step 7 of session startup = Read ONLY the reference file for THIS session. No others.**
 
 ### Session startup protocol (every session, no exceptions)
 
 ```
-Step 1: Re-read this SKILL.md                        ← re-internalize Rule Zero
+Step 1: Re-read this SKILL.md                        ← re-internalize Rule Zero + MARKET_GATE
 Step 2: Open Excel file → read _State tab
         ⚠ SESSION A first run exception: if the file does not exist yet,
-          skip Steps 3–11 entirely. Create the file. Go directly to PRE-FLIGHT in session-a.md.
+          skip Steps 3–11 entirely. Create the file. Run MARKET_GATE Step 0A first.
 Step 3: Parse _State into dict (format: "KEY: value" per line)
+Step 3b: ██ MARKET_GATE CHECK ██ — call enforce_market_gate(state)
+         If it raises → STOP. Do not write any tab until gate is locked.
+         (SESSION A first-run exception: gate will be written in Step 0B before Raw_Info)
 Step 4: Verify FILE_HASH matches current file mtime  ← if mismatch, STOP and alert user
 Step 5: Verify SKILL_VERSION in _State matches current skill version ← if mismatch, STOP
 Step 6: Verify previous session PHASE_DONE exists    ← if missing, STOP
@@ -473,13 +566,15 @@ If |Other Op Inc| > 10% of EBIT → investigate; model the largest component exp
 - `NI CHECK = Model NI − Source NI` (tolerance ±10 for quarterly rounding)
 - `REV CHECK = Model Total Revenue − Source Total Revenue`
 
-**R10 — Match granularity to finest disclosed data:**
+**R10 — Granularity is determined by listing venue, not disclosure pattern (mandatory):**
 
-| Disclosure pattern | IS / CF granularity | BS granularity |
+| Market | IS / CF granularity | BS granularity |
 |---|---|---|
-| 10-Q / quarterly 季报 | Quarterly — Q1, Q2, Q3, Q4 | Annual |
-| HK 中报 + annual | Semi-annual — H1, H2 | Annual |
-| Annual only | Annual | Annual |
+| US-listed (NYSE / NASDAQ / ADR) | **Quarterly — Q1, Q2, Q3, Q4 (forced)** | Annual |
+| A-share (Shanghai / Shenzhen) | **Quarterly — Q1, Q2, Q3, Q4 (forced)** | Annual |
+| HK-listed (HKEX main board / GEM) | **Semi-annual — H1, H2 (forced)** | Annual |
+
+**No exceptions.** Do not auto-detect or adapt based on what the company happens to disclose. Even if a US or A-share company only publishes annual data, the model columns must be quarterly (fill missing quarters with `—` or interpolated placeholders). Even if a HK company voluntarily publishes quarterly updates, the model granularity remains semi-annual.
 
 BS is always annual. Quarterly CF: Beg_Cash Q1 = prior FY BS Cash; Q2/Q3/Q4 = prior quarter CF Ending Cash (back-filled within SESSION D year-by-year loop).
 
@@ -514,6 +609,7 @@ Checks:    BS: TA−TLE=0 | CF: EndCash−BSCash=0 | NI: Model−Source=0 | Rev:
 6. **YTD data treated as standalone quarters** — Sina IS/CF is cumulative YTD; convert first: Q2=H1−Q1, Q3=Q3_YTD−H1, Q4=FY−Q3_YTD
 7. **Unit mismatch** — 万元 ≠ 千元 ≠ 百万元; verify in Phase 0; write to _State UNIT field; a silent 100x error
 8. **Missing CN GAAP items between 营业总成本 and 营业利润** — 其他收益/信用减值损失 etc. must be captured in R8 plug; omitting them makes EBIT wrong
+9. **[MARKET_GATE] Building columns before gate is locked** — calling `enforce_market_gate()` is mandatory before writing any IS/BS/CF column header; hardcoding "Q1/Q2/Q3/Q4" or "H1/H2" directly instead of reading `periods` from gate output is a structural error that invalidates the entire model
 
 ### ██ SEVERE — checks will fail or model will not balance ██
 
@@ -532,7 +628,7 @@ Checks:    BS: TA−TLE=0 | CF: EndCash−BSCash=0 | NI: Model−Source=0 | Rev:
 18. **Re-reading source PDF/web after Raw_Info is done** — violates R1; all data must flow via `=Raw_Info!` links
 19. **Raw_Info missing 0B operational details** — financial statements alone are insufficient; business KPIs and mgmt commentary are mandatory inputs for Assumptions
 20. **IS 资产减值损失 vs CF 资产减值准备 confusion** — IS line is often "--"; real non-cash impairment value is in CF supplementary section
-21. **Defaulting to annual when quarterly data exists** — check R10 first; run yfinance granularity auto-detect; `{3,6,9,12}` = quarterly, `{6,12}` = semi-annual; do NOT use yfinance as primary data source
+21. **Wrong granularity for listing venue** — US-listed and A-share models MUST be quarterly; HK-listed models MUST be semi-annual; do not auto-detect or adapt to what the company discloses; do NOT use yfinance as primary data source
 22. **Using yfinance forwardEps for A-share/HK forecast EPS** — yfinance returns USD-denominated EPS for A-shares (distorts CNY PE by ~6×); for A-share/HK consensus EPS use a dedicated data provider (AKShare, Wind, Bloomberg) rather than yfinance; US/ADR tickers may use yfinance directly
 
 ### ██ SESSION / _STATE errors ██
