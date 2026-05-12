@@ -2,15 +2,15 @@
 
 [English](README.md) | **中文**
 
-**版本：** 4.8 · 公开版
-**发布日期：** 2026年4月（新增 Claude Code 一等公民支持）
+**版本：** 5.0 · 公开版
+**发布日期：** 2026年5月 — v5.0 引入**三层防御体系**（预防性 hook + 19 项 QC gate + state.json sidecar）
 **兼容平台：** Claude Code / Cowork（Anthropic）
 
 ---
 
 ## 这个 Skill 做什么
 
-从零开始，在 Excel 中构建机构级**三表财务模型**（利润表、资产负债表、现金流量表）——所有预测单元格均为 Excel 公式（零硬编码），并内置 9 步质量控制验证。
+从零开始，在 Excel 中构建机构级**三表财务模型**（利润表、资产负债表、现金流量表）——所有预测单元格均为 Excel 公式（零硬编码），**每个 Session 末尾跑 19 项 QC gate 强制验证**。
 
 输出质量目标：IPO 招股书 / 卖方研究 initiating coverage 级别。
 
@@ -18,8 +18,10 @@
 - **中国准则 / IFRS / US GAAP** — 三套会计准则全部支持
 - **季报 / 半年报 / 年报** 颗粒度自动识别
 - **全公式预测** — IS/BS/CF 每一个预测单元格均为引用 Assumptions 的 Excel 公式，永不硬编码
-- **断点续跑** — 5 个 Session 独立构建，支持随时中断、下次接着跑
-- **9 项 QC 检查** — BS CHECK、CF CHECK、NI CHECK、REV CHECK、硬编码扫描、NCI 连续性、公式完整性、去除网格线、Summary 链接检查
+- **断点续跑** — 5 个 Session 独立构建，支持随时中断、下次接着跑；状态保存在 `state.json` sidecar 文件中（自动从 xlsx 内的 `_State` sheet 迁移）
+- **19 项 QC 检查 + BLOCKER/WARNING 分级** — BS / CF / NI / REV 数值重算、预测单元格硬编码扫描、NCI 连续性、公式完整性、R3 Others/CFO 双阈值、BS 现金回填、Σ(segments) = 营收、WC days 合理性、税率一致性、格式/网格线/字体/缩放检查、Summary 链接等
+- **预防性 PreToolUse hook**（可选，仅 Claude Code 支持）— Rule Zero 硬编码拦截、RAW_MAP spot-check、unit/granularity 前置校验、A 股/美股 ticker → Quarterly 强制
+- **Session 末尾 gate 强制** — 每个 Session 结束调用 `per_session_gate.py`，QC 子集通过才写入 `GATE_<X>_PASSED` 标记；下一 Session 缺少前置标记拒绝启动
 - **数据台账** — 每个输入值和派生值均记录来源与公式链路
 
 ---
@@ -115,14 +117,14 @@ unzip 3-statements-ultra-public.skill -d ~/.claude/skills/3-statements-ultra/
 当我在使用 3-statements-ultra skill 构建三表模型时，
 每次发生 context compaction 后，你必须：
 1. 重新读取 3-statements-ultra SKILL.md，再写任何代码
-2. 打开 Excel 文件，读取 _State tab，确认精确的恢复点
+2. 读取 state.json sidecar（自动从 xlsx 内的 _State sheet 迁移），确认精确的恢复点
 3. 读取 _model_log.md，恢复上一 session 的关键输出数字
 4. 读取 _pending_links.json，检查 BS→CF 的 Cash 回填是否待处理
-5. 用 RAW_MAP + ASM_MAP spot-check 验证行号，再使用任何行号
-6. IS/BS/CF 预测列单元格不得硬编码，每个单元格必须是字符串公式
+5. 用 RAW_MAP + ASM_MAP spot-check 验证行号，再使用任何行号（H2 hook 会在你引用 map 时自动 spot-check）
+6. IS/BS/CF 预测列单元格不得硬编码，每个单元格必须是字符串公式（H1 hook 会在 bash 执行前拦截）
 7. 只从下一个未完成步骤继续，不重跑已完成的部分
 不得依赖对话记忆来还原行号或中间计算结果。
-磁盘状态（_State、_model_log.md、_pending_links.json）永远是权威来源。
+磁盘状态（state.json、_model_log.md、_pending_links.json）永远是权威来源。
 ```
 
 ---
@@ -210,8 +212,75 @@ asyncio.run(check())
 [7] Cross_Check    ← 假设参数与外部来源交叉验证日志
 [8] Raw_Info       ← 历史数据提取（建好后不再回读原始来源）
 [_Registry]        ← 数据来源台账（Session E 末尾构建）
-[_State]           ← Session 元数据（MODEL_COMPLETE 后删除）
 ```
+
+Sidecar 文件（与 xlsx 同目录）：
+```
+<model>.state.json            ← Session 元数据、GATE_<X>_PASSED 标记、所有
+                                row/column map（v1.1 起替代 xlsx 内的 _State sheet；
+                                旧版 _State sheet 自动迁移）
+_model_log.md                 ← append-only checkpoint log（每个 tab section 记录）
+_pending_links.json           ← BS->CF 延迟引用（Session C 写入，Session D 消费清零）
+<model>.preflight.json        ← Session A gate sidecar 报告（PF-1..8）
+<model>.qc_<X>.json           ← Session B/C/D/E gate sidecar 报告（QC findings）
+```
+
+---
+
+## v5.0 防御层架构
+
+三层架构，越早抓住缺陷，返工成本越低。
+
+### Layer 1 — PreToolUse Hooks（可选，预防性）
+
+四个 self-gated PreToolUse Bash hook，在 bash 命令执行**前**拦截常见错误：
+
+| Hook | 拦截 | 为什么是预防性 |
+|---|---|---|
+| `three_stmt_hardcode_guard.py` | `ws_is['E5'].value = 0.30` 及别名变种（`ws = wb['IS']; ws['E5'].value = 0.30`）| Rule Zero 违反——一旦写入，整个 forecast 报废 |
+| `three_stmt_state_guard.py` | Raw_Info / Assumptions 编辑后 RAW_MAP / ASM_MAP 行号漂移 | 行号失配静默污染 session 输出 |
+| `three_stmt_unit_guard.py` | UNIT + IS_GRANULARITY 未锁就写 Raw_Info | 单位错 = 100× 静默错，QC 才发现 |
+| `three_stmt_granularity_guard.py` | A 股/美股 ticker 设非 Quarterly | COL_MAP 结构依赖颗粒度，错了要重建 |
+
+Hooks 位于 `3-statements-ultra/hooks/`。Claude Code 上启用方式：软链或拷贝到 `~/.claude/hooks/`：
+
+```bash
+ln -sf "$PWD/3-statements-ultra/hooks/"three_stmt_*.py ~/.claude/hooks/
+```
+
+Hooks 通过 context regex 自门控——只在 bash 命令引用 3-statements-ultra 概念（RAW_MAP / Raw_Info / _State / IS_GRANULARITY 等）时触发，不影响其他 skill。
+
+### Layer 2 — Gate Scripts（侦测性，分级输出）
+
+每个 Session 末尾调用 `python scripts/per_session_gate.py --session <A|B|C|D|E> --xlsx <path>`。仅当 QC 子集返回 BLOCKER=0 时，gate 才往 `state.json` 写入 `GATE_<X>_PASSED` 标记。下一 Session 缺少前置标记拒绝启动。
+
+| Session | Gate 内容 | PASS 时写入 |
+|---|---|---|
+| **A** | `preflight_check.py` 8 项 PF | `GATE_A_PASSED` |
+| **B** | `qc_suite.py --full --tabs IS`（QC-2/5/6/11/12/14/15/17）| `GATE_B_PASSED` |
+| **C** | `qc_suite.py --full --tabs BS` + `_pending_links.json` 写入校验 | `GATE_C_PASSED` |
+| **D** | `qc_suite.py --full --tabs CF`（QC-1/2/3/4/6/13）+ `_pending_links.json` 清零校验 | `GATE_D_PASSED` |
+| **E** | `qc_suite.py --full --tabs all`（QC-1..19 全集）+ data-validator | `GATE_E_PASSED` 然后 `MODEL_COMPLETE` |
+
+严重度分级（详见 `references/gate-spec.md`）：
+- **BLOCKER**（exit 2）— durable marker 不写入，下一 Session 无法启动
+- **WARNING**（exit 1）— marker 写入但带 `(with warnings)` 后缀；Session 继续
+- **PASS**（exit 0）— 干净
+
+Session 启动时校验前一 gate 标记：
+```bash
+python scripts/per_session_gate.py --verify-prev --session B --xlsx <model.xlsx>
+# 存在 GATE_A_PASSED → exit 0；否则 exit 2 halt
+```
+
+### Layer 3 — Reference Docs
+
+| 文件 | 内容 |
+|---|---|
+| `references/pitfalls.md` | 52 项 pitfall 索引，每项映射到 Layer 1 hook 或 Layer 2 QC |
+| `references/gate-spec.md` | 严重度语义、JSON sidecar schema、退出码约定、实现状态 |
+| `references/format-spec.md` | QC-14..19 格式基准（Book Antiqua / gridlines off / FF0070C0 input 蓝 / accounting 数字格式）|
+| `references/registry-integration.md` | R11 Data Registry 完整 SOP（Session E 最终验收）|
 
 ---
 
@@ -275,9 +344,9 @@ Claude 插件市场中有一个官方三表模型 Skill（`financial-analysis:3-
 
 中国会计准则利润表在"营业总成本"和"营业利润"之间存在若干科目（其他收益、信用减值损失、资产减值损失等），IFRS 和 US GAAP 中没有对应项。本 Skill 用专门的 R8 插项行来捕捉这部分差额——即来源中的营业利润与模型推导的 EBIT 之间的残差。用通用模板忽略这些科目，会导致 A 股和港股中国准则公司的 EBIT 系统性偏差。
 
-**5. 9 项 QC 检查必须全部通过，模型才能标记为完成。**
+**5. 19 项 QC 检查必须全部通过，模型才能标记为完成（v5.0）。**
 
-没有通过全部检查，模型无法写入 MODEL_COMPLETE 状态：BS CHECK = 0、CF CHECK = 0、NI CHECK ≈ 0、REV CHECK = 0、预测列硬编码扫描、NCI 连续性检查、公式完整性抽样检查、去除网格线检查、Summary Tab 零硬编码检查。官方 Skill 没有对应的质量门控。
+没有通过全部检查，模型无法写入 MODEL_COMPLETE 状态：数值重算（BS CHECK、CF CHECK、NI CHECK、REV CHECK 从模型 data_only 计算值直接读取）、预测列硬编码扫描、NCI 连续性、公式完整性抽样、_State 14-key 完整性、R3 Others/CFO 双阈值（15% WARN / 30% BLOCKER）、BS 现金回填、Σ(segments) = 营收对账、营运资本天数 vs 3 年历史均值、有效税率一致性、R3 Others 历史来源、格式/网格线/字体/数字格式/缩放/冻结窗格检查。每个 Session 末尾跑 gate，PASS 才写入 durable marker；下一 Session 缺少标记拒绝启动。官方 Skill 没有对应的质量门控。
 
 **6. 少数股东权益始终滚动计算。**
 
@@ -291,7 +360,9 @@ Claude 插件市场中有一个官方三表模型 Skill（`financial-analysis:3-
 | 收入结构 | 按业务线拆分，各自独立驱动 | 单行 |
 | 预测单元格 | 100% Excel 公式 | 公式与硬编码混用 |
 | 中国准则支持 | 原生（R8 插项、营业利润对账） | 通用模板 |
-| QC 验证 | 9 项强制检查 | 无 |
+| QC 验证 | 19 项强制检查 + BLOCKER/WARNING 分级 | 无 |
+| 预防性 hook | 4 个 PreToolUse hook（Rule Zero、_State、unit、granularity）| 无 |
+| Session 末尾 gate | 每个 Session 写 durable marker，下一 Session 无标记拒绝启动 | 无 |
 | NCI 滚动计算 | 强制执行 | 不保证 |
 | 季度颗粒度 | 完整支持（每年 35 列） | 仅年度 |
 | 配置成本 | 5 个 Session，约 1–2 小时 | 单 Session |

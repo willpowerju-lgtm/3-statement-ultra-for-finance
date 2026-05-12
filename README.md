@@ -2,15 +2,15 @@
 
 **English** | [中文](README.zh.md)
 
-**Version:** 4.8 · Public Edition
-**Build date:** April 2026 (Claude Code first-class install)
+**Version:** 5.0 · Public Edition
+**Build date:** May 2026 — v5.0 ships the **three-layer defense system** (preventive hooks + 19-QC gate suite + state.json sidecar)
 **Compatibility:** Claude Code / Cowork (Anthropic)
 
 ---
 
 ## What This Skill Does
 
-Builds a complete, institutional-grade **three-statement financial model** (Income Statement, Balance Sheet, Cash Flow Statement) in Excel from scratch — with full formula linkage, zero hardcoded forecast cells, and a 9-step QC validation suite.
+Builds a complete, institutional-grade **three-statement financial model** (Income Statement, Balance Sheet, Cash Flow Statement) in Excel from scratch — with full formula linkage, zero hardcoded forecast cells, and a **19-check QC gate suite enforced at the end of every session**.
 
 Output quality targets: IPO prospectus / equity research initiating coverage.
 
@@ -18,8 +18,10 @@ Key features:
 - **CN GAAP / IFRS / US GAAP** — all three accounting standards supported
 - **Quarterly / Semi-annual / Annual** granularity auto-detected from source data
 - **Formula-only forecasts** — every IS/BS/CF cell is an Excel formula, never a hardcoded number
-- **State persistence** — 5-session build with full resume-after-interruption support
-- **9 QC checks** — BS CHECK, CF CHECK, NI CHECK, REV CHECK, hardcode scan, NCI continuity, formula integrity, gridlines, Summary links
+- **State persistence** — 5-session build with full resume-after-interruption support; state stored in a `state.json` sidecar file (auto-migrates from legacy in-xlsx `_State` sheet)
+- **19 QC checks with BLOCKER / WARNING severity tiers** — BS / CF / NI / REV reconciliation, forecast-cell hardcode scan, NCI continuity, formula integrity, R3 Others/CFO dual-threshold, BS Cash back-fill, segment-sum vs Total Revenue, WC days sanity, tax rate consistency, format/gridlines/font/zoom checks, Summary linkage, and more
+- **Preventive PreToolUse hooks** (optional, Claude Code only) — Rule Zero hardcode interception, RAW_MAP spot-check, unit/granularity prerequisite enforcement, A-share/US ticker → Quarterly enforcement
+- **Per-session gate enforcement** — each session ends with a `per_session_gate.py` call that writes a durable `GATE_<X>_PASSED` marker only if QC subset passes; next session refuses to start without the previous marker
 - **Data registry** — built-in lineage tracking for every input and derived number
 
 ---
@@ -115,14 +117,14 @@ Where to paste it depends on your client:
 When I am building a 3-statement financial model using the 3-statements-ultra skill,
 after ANY context compaction event, you MUST:
 1. Re-read the 3-statements-ultra SKILL.md before writing any code
-2. Open the Excel model file and read the _State tab — determine exact resume point
+2. Read the state.json sidecar (auto-migrates from legacy _State sheet) — determine exact resume point
 3. Read _model_log.md — recover prior session outputs (key totals, check results)
 4. Read _pending_links.json — check if BS→CF back-fill is pending
-5. Run RAW_MAP + ASM_MAP spot-check before using any row numbers
-6. Never hardcode any IS/BS/CF forecast cell — every cell must be a string formula
+5. Run RAW_MAP + ASM_MAP spot-check before using any row numbers (H2 hook does this automatically when you reference the maps)
+6. Never hardcode any IS/BS/CF forecast cell — every cell must be a string formula (H1 hook will block this before bash executes)
 7. Resume from the next incomplete step only — never re-run completed sections
 Do not rely on conversation memory for row numbers or intermediate calculation results.
-Disk state (_State, _model_log.md, _pending_links.json) is always authoritative.
+Disk state (state.json, _model_log.md, _pending_links.json) is always authoritative.
 ```
 
 ---
@@ -210,8 +212,76 @@ asyncio.run(check())
 [7] Cross_Check    ← assumption validation log vs external sources
 [8] Raw_Info       ← extracted historical data (never re-read after build)
 [_Registry]        ← data lineage registry (built in Session E)
-[_State]           ← session metadata (delete after MODEL_COMPLETE)
 ```
+
+Sidecar files (alongside the xlsx in the same folder):
+```
+<model>.state.json            ← session metadata, GATE_<X>_PASSED markers, all
+                                row/column maps (replaces in-xlsx _State sheet
+                                as of v1.1; legacy _State auto-migrates)
+_model_log.md                 ← append-only checkpoint log of every tab section
+_pending_links.json           ← deferred BS->CF references (written by Session C,
+                                consumed and cleared by Session D)
+<model>.preflight.json        ← Session A gate sidecar report (8 PF checks)
+<model>.qc_<X>.json           ← Session B/C/D/E gate sidecar reports (QC findings)
+```
+
+---
+
+## v5.0 Defense Layers
+
+Three-layer architecture to catch model defects early. The further left a defect is caught, the less rework it costs.
+
+### Layer 1 — PreToolUse Hooks (optional, preventive)
+
+Four self-gated PreToolUse Bash hooks intercept common mistakes *before* the bash command runs:
+
+| Hook | Catches | Why preventive matters |
+|---|---|---|
+| `three_stmt_hardcode_guard.py` | `ws_is['E5'].value = 0.30` and alias variants (`ws = wb['IS']; ws['E5'].value = 0.30`) | Rule Zero violation — once written, entire forecast tab is dead |
+| `three_stmt_state_guard.py` | RAW_MAP / ASM_MAP row-number drift after Raw_Info or Assumptions is edited | Stale row maps silently corrupt session outputs |
+| `three_stmt_unit_guard.py` | Writes to Raw_Info before UNIT + IS_GRANULARITY are locked in state.json | Wrong unit = silent 100× error invisible until QC |
+| `three_stmt_granularity_guard.py` | A-share / US ticker set to non-Quarterly granularity | COL_MAP structure dependent on granularity — wrong choice = rebuild |
+
+Hooks live in `3-statements-ultra/hooks/`. To enable on Claude Code, symlink or copy into `~/.claude/hooks/`:
+
+```bash
+ln -sf "$PWD/3-statements-ultra/hooks/"three_stmt_*.py ~/.claude/hooks/
+```
+
+Hooks are self-gated by context regex — they only fire when bash commands reference 3-statements-ultra concepts (RAW_MAP / Raw_Info / _State / IS_GRANULARITY / etc.). Other skills are unaffected.
+
+### Layer 2 — Gate Scripts (detective, severity-tiered)
+
+Each session ends with `python scripts/per_session_gate.py --session <A|B|C|D|E> --xlsx <path>`. The gate writes a durable `GATE_<X>_PASSED` marker to `state.json` only if its QC subset returns BLOCKER=0. Next session refuses to start without the previous marker.
+
+| Session | Gate runs | Writes on PASS |
+|---|---|---|
+| **A** | `preflight_check.py` 8-item PF | `GATE_A_PASSED` |
+| **B** | `qc_suite.py --full --tabs IS` (QC-2/5/6/11/12/14/15/17) | `GATE_B_PASSED` |
+| **C** | `qc_suite.py --full --tabs BS` + `_pending_links.json` written | `GATE_C_PASSED` |
+| **D** | `qc_suite.py --full --tabs CF` (QC-1/2/3/4/6/13) + `_pending_links.json` cleared | `GATE_D_PASSED` |
+| **E** | `qc_suite.py --full --tabs all` (QC-1..19) + data-validator | `GATE_E_PASSED` then `MODEL_COMPLETE` |
+
+Severity tiers (per `references/gate-spec.md`):
+- **BLOCKER** (exit 2) — durable marker not written; next session can't start
+- **WARNING** (exit 1) — marker written with `(with warnings)` suffix; session proceeds
+- **PASS** (exit 0) — clean
+
+Session startup validates the previous gate's marker:
+```bash
+python scripts/per_session_gate.py --verify-prev --session B --xlsx <model.xlsx>
+# exit 0 if GATE_A_PASSED present; exit 2 otherwise
+```
+
+### Layer 3 — Reference Docs
+
+| File | Contents |
+|---|---|
+| `references/pitfalls.md` | 52-item pitfall index, each mapped to a Layer 1 hook or Layer 2 QC |
+| `references/gate-spec.md` | Severity rubric, JSON sidecar schema, exit-code conventions, implementation status |
+| `references/format-spec.md` | QC-14..19 format baseline (Book Antiqua, gridlines off, FF0070C0 input blue, accounting number formats) |
+| `references/registry-integration.md` | Detailed R11 Data Registry SOP for the final Session E acceptance step |
 
 ---
 
@@ -255,11 +325,20 @@ This is a sanitized version of the original private skill. The following have be
 
 - **Bark push notification module** — `bark-notify.md` and all `bark()` function calls removed. The original skill sent push notifications to a private device during long-running sessions; this is not needed for general use.
 - **Internal session paths** — hardcoded internal deployment paths (e.g. Python package install locations specific to the original environment) replaced with standard `pip install` instructions.
-- **Internal data pipeline references** — references to a proprietary external `data-validator` script replaced with a self-contained openpyxl implementation in R11.
-- **`WorkflowState` / `SessionLog` integration blocks** — the original skill's top and bottom blocks hooked into an internal workflow/audit-log system (fixed paths under `/tmp/repo/session-log/src` and `~/.claude/skills/session-log/`). These have no meaning outside that environment and were removed. Everything needed for the 5-session build flow lives in the Excel `_State` tab and the two sidecar files (`_model_log.md`, `_pending_links.json`).
+- **`WorkflowState` / `SessionLog` integration blocks** — the original skill's top and bottom blocks hooked into an internal workflow/audit-log system (fixed paths under `/tmp/repo/session-log/src` and `~/.claude/skills/session-log/`). These have no meaning outside that environment and were removed. The 5-session build flow now stores state in a `state.json` sidecar file plus `_model_log.md` and `_pending_links.json`.
 - **Internal tickers in examples** — portfolio-specific tickers (e.g. A-share / HK names the original author was covering) replaced with neutral public-company tickers (`BABA`, `0700.HK`, `600519.SS`, `PDD`).
+- **Internal review attribution** — internal cross-model audit annotations stripped from code comments; the underlying defect fixes are kept.
 
-All core modeling logic, QC checks, templates, and session protocols are unchanged.
+What's **included** in v5.0 (was not in earlier public editions):
+
+- **`scripts/qc_suite.py`** — 19 QC checks (was 9 inline in session-e.md; now extracted to a callable script with BLOCKER/WARNING severity tiers and JSON sidecar output)
+- **`scripts/preflight_check.py`** — Session A 8-item PF gate
+- **`scripts/per_session_gate.py`** — session dispatcher + `GATE_<X>_PASSED` durable markers + `--verify-prev` startup check
+- **`scripts/state_io.py`** — state.json sidecar I/O with automatic migration from legacy in-xlsx `_State` sheet
+- **`hooks/three_stmt_*.py`** — 4 optional PreToolUse Bash hooks (Rule Zero / state spot-check / unit prereq / ticker granularity)
+- **`references/{pitfalls, gate-spec, format-spec, registry-integration}.md`** — full pitfall index, severity rubric + JSON schema, format baseline, and R11 Data Registry SOP
+
+All core modeling logic, templates, and session protocols are unchanged.
 
 ---
 
@@ -289,9 +368,9 @@ Rule Zero of this skill is that no forecast cell in IS/BS/CF may hold a hardcode
 
 Chinese GAAP income statements have items between 营业总成本 and 营业利润 (其他收益, 信用减值损失, 资产减值损失, etc.) that are not present in IFRS or US GAAP. This skill handles them with a dedicated R8 plug row that captures the residual between source 营业利润 and model-derived EBIT. Ignoring these items — as a generic template will — produces systematically wrong EBIT for A-share and HK-listed CN GAAP companies.
 
-**5. Nine QC checks must pass before the model is marked complete.**
+**5. Nineteen QC checks must pass before the model is marked complete (v5.0).**
 
-The model cannot be finished without all of BS CHECK = 0, CF CHECK = 0, NI CHECK ≈ 0, REV CHECK = 0, a hardcode scan across all forecast columns, NCI continuity check, formula integrity spot-check, gridlines-off check, and Summary zero-hardcode check. The official skill has no equivalent QC gate.
+The model cannot be finished without all 19 QCs passing: numeric reconciliation (BS CHECK, CF CHECK, NI CHECK, REV CHECK read from the model's own data_only-computed cells), forecast-cell hardcode scan, NCI continuity, formula integrity spot-check, _State 14-key integrity, R3 Others/CFO dual threshold (15% WARN / 30% BLOCKER), BS Cash back-fill, segment-sum vs Total Revenue equality, working-capital-days sanity vs 3-year historical average, effective tax rate consistency, R3 Others historical source check, and format/gridlines/font/number-format/zoom/freeze-panes checks. Each session ends with a gate that writes a durable marker only on PASS; the next session refuses to start without it. The official skill has no equivalent QC gate.
 
 **6. NCI is always rolled forward.**
 
@@ -305,7 +384,9 @@ If a company has minority interest, NCI on the balance sheet must compound each 
 | Revenue structure | Per-segment, independent drivers | Single line |
 | Forecast cells | 100% Excel formulas | Mix of formulas and hardcodes |
 | CN GAAP support | Native (R8 plug, 营业利润 reconciliation) | Generic template |
-| QC validation | 9 mandatory checks | None |
+| QC validation | 19 mandatory checks with BLOCKER/WARNING tiers | None |
+| Preventive hooks | 4 PreToolUse hooks (Rule Zero, state, unit, granularity) | None |
+| Per-session gates | Each session writes durable marker; next session refuses to start without it | None |
 | NCI roll-forward | Enforced | Not guaranteed |
 | Quarterly granularity | Full (35 IS columns per year) | Annual only |
 | Setup required | 5 sessions, ~1–2 hours total | Single session |
