@@ -300,3 +300,22 @@ print("QC-8 PASS: Gridlines disabled on all sheets")
 ```
 # QC-9 (Summary hardcodes) only runs in SESSION E — skip here.
 ```
+---
+
+## END-OF-SESSION GATE (mandatory)
+
+After CF complete + BS Cash back-filled:
+
+```bash
+python scripts/per_session_gate.py --session D --xlsx <model.xlsx>
+```
+
+QC subset: QC-1 (BS/CF numeric recomputation), QC-2, QC-3 (Others/CFO),
+QC-4 (BS Cash starts with `=CF!`), QC-6, QC-13 (R3 historical source)
++ check that `_pending_links.json` is cleared (proof that back-fill is complete).
+
+exit 2 blocks SESSION E; exit 0/1 writes GATE_D_PASSED.
+
+NOTE: This file's previous L59-306 contained QC-1..QC-9 implementation code.
+That logic has been moved to `scripts/qc_suite.py` and is invoked by the
+per_session_gate.py wrapper. Do not run QC code inline in this session.

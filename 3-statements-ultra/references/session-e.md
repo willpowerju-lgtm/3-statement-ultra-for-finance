@@ -412,3 +412,29 @@ for row in summary_data_rows:
                 f"QC-9 FAIL: Hardcode in Summary!{get_column_letter(col)}{row} = {val}")
 print("QC-9 PASS: No hardcodes in Summary")
 ```
+---
+
+## END-OF-SESSION GATE (mandatory + final acceptance)
+
+After Returns + Cross_Check + Summary complete:
+
+```bash
+python scripts/per_session_gate.py --session E --xlsx <model.xlsx>
+```
+
+Runs full QC Suite (QC-1..19) then data-validator validate.py.
+
+Write order (must follow):
+1. `qc_suite.py --full` all 19 pass (exit 0/1)
+2. `_Registry` sheet built and populated (per R11 section above)
+3. `data-validator/scripts/validate.py --mode full` passes (no FAIL)
+4. write `REGISTRY_VALIDATED: TRUE` to _State
+5. write `GATE_E_PASSED: <ts>` to _State
+6. write `PHASE_DONE: MODEL_COMPLETE` to _State
+7. (optional) delete _State sheet to prepare for delivery
+
+Any step fails -> MODEL_COMPLETE must not be written.
+
+NOTE: This file's L225-403 contained the QC-1..QC-9 implementation.
+That logic has been moved to `scripts/qc_suite.py` and is dispatched
+by `per_session_gate.py --session E`. Do not run QC code inline here.

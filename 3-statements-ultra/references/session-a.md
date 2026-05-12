@@ -403,3 +403,22 @@ BS: AR/Inv/AP days, capex, debt schedule. Other: NCI ratio, share count, FX.
 CN GAAP: Other Op Inc assumption (R8 plug), quarterly seasonality % per segment.
 
 Granularity: if IS_GRANULARITY = Quarterly → add seasonality % rows (Q1/Q2/Q3/Q4 % of FY) per revenue segment.
+---
+
+## END-OF-SESSION GATE (mandatory)
+
+After Raw_Info + Assumptions are written, run preflight:
+
+```bash
+python scripts/per_session_gate.py --session A --xlsx <model.xlsx>
+```
+
+Internally calls `preflight_check.py`:
+- PF-1 UNIT locked (BLOCKER) | PF-2 IS_GRANULARITY locked (BLOCKER)
+- PF-3 DATA_SOURCES registered (BLOCKER) | PF-4 Raw_Info non-empty >= 95% (BLOCKER)
+- PF-5 NLM_0B_DONE (WARNING) | PF-6 YTD conversion (WARNING)
+- PF-7 RAW_MAP/ASM_MAP spot-check (BLOCKER) | PF-8 NCI ratio set (BLOCKER)
+
+exit 2 blocks SESSION B; exit 1 warning only; exit 0 writes GATE_A_PASSED to _State.
+
+See `gate-spec.md`.

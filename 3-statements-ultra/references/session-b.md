@@ -147,3 +147,17 @@ MEMO: D&A (固定资产折旧/无形资产摊销/长期待摊摊销/Total) · SB
 **R&D %:** `12.3% FY24; committed >10% long-term; capitalization rate X%`
 **ETR%:** `5.9% FY24 HNTE preferential; expires [year]; normalizing to 15%`
 **Other Op Inc:** `R8 plug — avg 2.1% rev; mainly 其他收益 (govt grants ~60k recurring) + 信用减值`
+---
+
+## END-OF-SESSION GATE (mandatory)
+
+After IS is complete:
+
+```bash
+python scripts/per_session_gate.py --session B --xlsx <model.xlsx>
+```
+
+QC subset: QC-2 (hardcode), QC-5 (NCI), QC-6 (formula integrity), QC-11 (segment sum),
+QC-12 (tax rate), QC-14 (A1 unit), QC-15 (font), QC-17 (number format).
+
+exit 2 blocks SESSION C; exit 0/1 writes GATE_B_PASSED.

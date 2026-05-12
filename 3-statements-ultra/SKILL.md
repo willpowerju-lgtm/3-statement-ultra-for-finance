@@ -83,7 +83,7 @@ To prevent state loss after context compaction, add the following block to your 
 When I am building a 3-statement financial model using the 3-statements-ultra skill,
 after ANY context compaction event, you MUST:
 1. Re-read the 3-statements-ultra SKILL.md before writing any code
-2. Open the Excel model file and read the _State tab — determine exact resume point
+2. Read the state.json sidecar (auto-migrates from legacy _State sheet) — determine exact resume point
 3. Read _model_log.md — recover prior session outputs (key totals, check results)
 4. Read _pending_links.json — check if BS→CF back-fill is pending
 5. Run RAW_MAP + ASM_MAP spot-check before using any row numbers
@@ -597,59 +597,37 @@ Checks:    BS: TA−TLE=0 | CF: EndCash−BSCash=0 | NI: Model−Source=0 | Rev:
 
 ---
 
-## TOP MISTAKES (accumulated — all previously encountered)
+## PITFALLS & DEFENSE INVENTORY (v0/v1/v1.1)
 
-### ██ FATAL — model produces wrong numbers silently ██
+48+ pitfall index is now in **`references/pitfalls.md`** (categorized BLOCKER / WARNING / Doc-only). Each pitfall is mapped to either a PreToolUse Bash hook (preventive) or a `qc_suite.py` QC check (detective).
 
-1. **[RULE ZERO] Hardcoding forecast or historical cells** — every IS/BS/CF non-input cell must be a string Excel formula; passing any float/int produces a broken model; QC-2 catches this
-2. **Mixing bare reference and standalone formula** — bare ref (no `=`) for embedding inside compound formulas only; standalone (starts with `=`) for direct cell assignment only; `f"=D5*(1+=Assumptions!B2)"` is an Excel parse error
-3. **Applying total D&A to PP&E roll-forward** — use PP&E-specific depr rate only; total D&A includes intangible + ROU amort and makes PP&E go negative; R3 absorbs the residual
-4. **NCI set to 0 in forecasts** — always roll forward if historical NCI ≠ 0; QC-5 catches this
-5. **Revenue double-count across segments** — each segment must use independent source data
-6. **YTD data treated as standalone quarters** — Sina IS/CF is cumulative YTD; convert first: Q2=H1−Q1, Q3=Q3_YTD−H1, Q4=FY−Q3_YTD
-7. **Unit mismatch** — 万元 ≠ 千元 ≠ 百万元; verify in Phase 0; write to _State UNIT field; a silent 100x error
-8. **Missing CN GAAP items between 营业总成本 and 营业利润** — 其他收益/信用减值损失 etc. must be captured in R8 plug; omitting them makes EBIT wrong
-9. **[MARKET_GATE] Building columns before gate is locked** — calling `enforce_market_gate()` is mandatory before writing any IS/BS/CF column header; hardcoding "Q1/Q2/Q3/Q4" or "H1/H2" directly instead of reading `periods` from gate output is a structural error that invalidates the entire model
+Severity model:
+- **BLOCKER** (exit 2) — next session cannot start; durable marker not written
+- **WARNING** (exit 1) — logged in JSON sidecar; session continues with caution
+- **PASS** (exit 0) — clean
 
-### ██ SEVERE — checks will fail or model will not balance ██
+## GATE INVENTORY
 
-9. **Writing R3 Others before CFI and CFF are complete** — R3 references CFI_Total and CFF_Total; write Others last within each year's loop; SESSION D step d
-10. **Not back-filling BS Cash year by year** — back-fill immediately after each year's CF; Beg_Cash of year N+1 depends on BS Cash year N; never batch at end; QC-4 catches this
-11. **Free plugs to force-balance BS** — never `= TLE − NCA − CA_excl`; only R3 Others in CFO (and R8 for CN GAAP IS)
-12. **Others plug > 15% of CFO** — material CF line is missing; find and model it explicitly; QC-3 warns
-13. **Validating BS CHECK in SESSION C** — BS CHECK cannot be 0 while Cash = placeholder; only validate after SESSION D back-fill
-14. **CF CHECK written after all years** — CF CHECK for year N must be written inside the per-year loop, before back-filling BS Cash for year N
-15. **Double-counting interest/tax in CF forecasts** — already embedded in NI; no separate CFO rows in forecasts
-16. **Building CF before BS is complete** — BS WC drives CF; all BS sections must have BS_DONE markers before SESSION D starts
+Each session ends with `per_session_gate.py` running the right QC subset.
 
-### ██ DATA / SOURCE errors ██
+| Session | Gate entry | QC subset |
+|---|---|---|
+| 启动前 | hooks auto-fire | H1 hardcode_guard / H2 state_guard / H3 unit_guard / H5 granularity_guard |
+| A 末尾 | `python scripts/per_session_gate.py --session A --xlsx <p>` | PF-1..8 (preflight) |
+| B 末尾 | `python scripts/per_session_gate.py --session B --xlsx <p>` | QC-2 / 5 / 6 / 11 / 12 / 14 / 15 / 17 |
+| C 末尾 | `python scripts/per_session_gate.py --session C --xlsx <p>` | QC-2 / 6 / 7 + `_pending_links.json` written |
+| D 末尾 | `python scripts/per_session_gate.py --session D --xlsx <p>` | QC-1 / 2 / 3 / 4 / 6 / 13 + `_pending_links.json` cleared |
+| E 末尾 | `python scripts/per_session_gate.py --session E --xlsx <p>` | QC-1..19 full + data-validator |
 
-17. **Raw_Info cells left blank** — every extracted item must be populated; downstream formula refs to blank cells silently return 0
-18. **Re-reading source PDF/web after Raw_Info is done** — violates R1; all data must flow via `=Raw_Info!` links
-19. **Raw_Info missing 0B operational details** — financial statements alone are insufficient; business KPIs and mgmt commentary are mandatory inputs for Assumptions
-20. **IS 资产减值损失 vs CF 资产减值准备 confusion** — IS line is often "--"; real non-cash impairment value is in CF supplementary section
-21. **Wrong granularity for listing venue** — US-listed and A-share models MUST be quarterly; HK-listed models MUST be semi-annual; do not auto-detect or adapt to what the company discloses; do NOT use yfinance as primary data source
-22. **Using yfinance forwardEps for A-share/HK forecast EPS** — yfinance returns USD-denominated EPS for A-shares (distorts CNY PE by ~6×); for A-share/HK consensus EPS use a dedicated data provider (AKShare, Wind, Bloomberg) rather than yfinance; US/ADR tickers may use yfinance directly
+Each session's startup runs `per_session_gate.py --verify-prev --session <X> --xlsx <p>` to check the previous gate's `GATE_<prev>_PASSED` marker in state.json.
 
-### ██ SESSION / _STATE errors ██
-
-23. **Skipping _State init or not writing progress markers** — every session depends on _State; IS_PROGRESS / BS_PROGRESS / CF_PROGRESS must be written after every section so compact resume works
-24. **Using hardcoded row numbers across sessions** — always read RAW_MAP and ASM_MAP from _State as JSON and run spot-check; never assume row numbers from memory
-25. **SKILL_VERSION mismatch** — if _State shows a different version than current SKILL.md, stop and rebuild _State before proceeding
-26. **Not writing _model_log.md after tab completion** — next session or post-compact resume depends on this file for cross-validation; skipping it means re-deriving numbers from Excel reads (slow, error-prone)
-27. **Not writing _pending_links.json in SESSION C** — SESSION D cannot batch back-fill without this file; forgetting it means manual cell hunting after compaction
-
-### ██ FORMATTING / PROCESS ██
-
-28. **Not removing gridlines** — disable on every sheet at setup; QC-8 catches this
-29. **Blue text on formula cells** — black for formulas; blue reserved for hardcoded Assumptions inputs only
-30. **Revising IS/BS/CF cells directly from Cross_Check** — all changes must route through Assumptions tab only
-31. **Hardcoding Summary financials** — every figure links to model cells via KEY_CELLS; QC-9 catches this
-32. **Skipping QC Suite** — all 9 checks must pass before writing PHASE_DONE; no exceptions
-
+See `references/gate-spec.md` for JSON schema and exit code conventions; `references/pitfalls.md` for the full mapping.
 ---
 
 ## R11 — Data Registry (_Registry sheet, SESSION E 完成后执行)
+
+v1.1 note: state persistence has moved from the in-xlsx `_State` sheet to a `state.json` sidecar file (`<xlsx_stem>.state.json` alongside the xlsx). Auto-migrates from legacy `_State` sheet on first load. See `references/registry-integration.md` for the full SOP and `scripts/state_io.py` for the API.
+
 
 **三表模型完成、QC Suite全部通过后，在同一 Excel 文件内建 `_Registry` sheet 登记数据来源。**
 

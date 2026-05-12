@@ -169,3 +169,19 @@ Cash Conversion Cycle    [calc] [calc] [calc]  [calc]  [calc]   = AR + Inv − A
 NWC                      [calc] [calc] [calc]  [calc]  [calc]   = CA excl Cash − CL excl Debt
 ```
 Historical [x]: black formula. Forecast [input]: navy, light blue bg, links Assumptions.
+---
+
+## END-OF-SESSION GATE (mandatory)
+
+After BS is complete (Cash placeholder OK):
+
+```bash
+python scripts/per_session_gate.py --session C --xlsx <model.xlsx>
+```
+
+QC subset: QC-2, QC-6, QC-7 (_State integrity) + additional check that
+`_pending_links.json` has been written with deferred BS->CF references
+(SESSION C's key deliverable).
+
+exit 2 blocks SESSION D (including missing _pending_links case);
+exit 0/1 writes GATE_C_PASSED.
