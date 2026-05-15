@@ -6,7 +6,7 @@ description: >
   ❌ 填写已有模板请用 financial-analysis:3-statements
 ---
 
-# 3-Statement Model — IPO / Equity Research Quality (v4.8 · Public Edition)
+# 3-Statement Model — IPO / Equity Research Quality (v6.0 · Public Edition)
 
 ---
 

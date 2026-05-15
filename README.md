@@ -2,8 +2,8 @@
 
 **English** | [中文](README.zh.md)
 
-**Version:** 5.0 · Public Edition
-**Build date:** May 2026 — v5.0 ships the **three-layer defense system** (preventive hooks + 19-QC gate suite + state.json sidecar)
+**Version:** 6.0 · Public Edition
+**Build date:** May 2026 — v6.0 adds **R12 Revenue_Build** (quarterly forecasting + inline assumption mirrors + 3 new QC checks) on top of v5.0's three-layer defense system
 **Compatibility:** Claude Code / Cowork (Anthropic)
 
 ---
@@ -225,6 +225,25 @@ _pending_links.json           ← deferred BS->CF references (written by Session
 <model>.preflight.json        ← Session A gate sidecar report (8 PF checks)
 <model>.qc_<X>.json           ← Session B/C/D/E gate sidecar reports (QC findings)
 ```
+
+---
+
+## v6.0 — What's New: R12 Revenue_Build
+
+**Problem solved:** In multi-segment models, Revenue_Build tabs (Vol × ASP per sub-brand) were commonly built but never wired into IS — sitting as orphan reconciliation tables while IS forecast Revenue used Assumptions YoY% directly. This breaks when the bottom-up build disagrees with the top-down YoY.
+
+**New in v6.0:**
+
+| Feature | Description |
+|---|---|
+| **SESSION A2** (conditional) | Builds `Revenue_Build` tab before IS. Triggered when ≥2 segments or vol×price disclosed. |
+| **Quarterly forecasting** | Forecast at Q level (Q YoY for mature, FY guide + ramp for new biz). FY = SUM(Q) — never the driver. |
+| **Inline ↳ pattern** | Forecast formulas reference same-sheet rows only. `↳` mirror rows are the sole cross-tab link to Assumptions. |
+| **QC-20** | Revenue_Build forecast cell integrity — blank/hardcode/text → BLOCKER. Q/FY aware. |
+| **QC-21** | IS forecast Revenue → Revenue_Build link — Q cells strict, FY/H1/H2 summary cells accept any formula. |
+| **QC-22** | Historical inline row completeness — BLOCKER if a computable implied ratio is blank. |
+| **`normalize_revenue_build()`** | Unified state normalizer handling string/bool/None for REVENUE_BUILD flag. |
+| **Scope filter** | `per_session_gate.py` only counts in-scope QCs per session (out-of-scope BLOCKERs deferred). |
 
 ---
 

@@ -2,8 +2,8 @@
 
 [English](README.md) | **中文**
 
-**版本：** 5.0 · 公开版
-**发布日期：** 2026年5月 — v5.0 引入**三层防御体系**（预防性 hook + 19 项 QC gate + state.json sidecar）
+**版本：** 6.0 · 公开版
+**发布日期：** 2026年5月 — v6.0 新增 **R12 Revenue_Build**（季度预测架构 + inline assumption mirrors + 3 项新 QC），基于 v5.0 三层防御体系
 **兼容平台：** Claude Code / Cowork（Anthropic）
 
 ---
@@ -224,6 +224,24 @@ _pending_links.json           ← BS->CF 延迟引用（Session C 写入，Sessi
 <model>.preflight.json        ← Session A gate sidecar 报告（PF-1..8）
 <model>.qc_<X>.json           ← Session B/C/D/E gate sidecar 报告（QC findings）
 ```
+
+---
+
+## v6.0 新增：R12 Revenue_Build
+
+**解决的问题：** 多 segment 模型中，Revenue_Build tab（Vol × ASP 自下而上搭建）常常沦为孤儿核对表 — IS forecast Revenue 直接走 Assumptions YoY%，底部搭建和 IS 断层。
+
+**v6.0 新功能：**
+
+| 功能 | 说明 |
+|---|---|
+| **SESSION A2**（条件触发） | IS 之前搭建 Revenue_Build，≥2 segments 或有 vol×price 披露时默认开启 |
+| **季度预测架构** | Q 级别预测（成熟业务 Q YoY / 新业务 FY guide + ramp），FY = SUM(Q) |
+| **Inline ↳ pattern** | 预测公式只引同 sheet 行，↳ 行是唯一跨 tab link 到 Assumptions |
+| **QC-20** | Revenue_Build forecast 完整性 — 空白/硬编码/文本 → BLOCKER，Q/FY 感知 |
+| **QC-21** | IS forecast Revenue → Revenue_Build link — Q 严格，FY/H1/H2 接受任意公式 |
+| **QC-22** | Historical ↳ 行完整性 — 有 prior 但为空 → BLOCKER |
+| **Scope filter** | `per_session_gate.py` 按 session 权限范围计 QC findings，out-of-scope 延后 |
 
 ---
 
