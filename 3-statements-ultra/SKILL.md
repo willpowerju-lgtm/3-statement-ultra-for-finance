@@ -103,25 +103,37 @@ This prevents the most common failure mode: resuming from memory after compactio
 **THE #1 FAILURE MODE OF THIS SKILL IS HARDCODED FORECAST CELLS.**
 
 ```
-CORRECT — historical cell:  ws["B5"].value = '=Raw_Info!C12'
-CORRECT — forecast cell:    ws["E5"].value = '=Assumptions!B8'
+CORRECT — historical IS/BS/CF cell:  ws["B5"].value = '=Raw_Info!C12'
+CORRECT — forecast non-revenue:      ws["E5"].value = '=Assumptions!B8'
+CORRECT — forecast IS revenue row:   ws["E5"].value = '=Revenue_Build!E36'   ← when REVENUE_BUILD=TRUE
+CORRECT — forecast Revenue_Build:    ws["E5"].value = '=D5*(1+Assumptions!B12)'
 
 BROKEN:   ws["E5"].value = 0.30                     ← hardcode, model is dead
 BROKEN:   ws["E5"].value = float(revenue * 0.30)    ← hardcode, model is dead
 BROKEN:   ws["E5"].value = prev_value * growth       ← hardcode, model is dead
+BROKEN — IS forecast Revenue row when Revenue_Build exists:
+          ws_is["E5"].value = '=D5*(1+Assumptions!B12)'   ← bypasses Revenue_Build (R12 violation)
 ```
 
 **Formula reference rules — two modes, never mix:**
 - **Direct assignment** (cell gets the formula itself): value must be a string starting with `=`
   - Historical: `ws["B5"].value = f"=Raw_Info!C{raw_map['IS: Revenue']}"`
   - Forecast standalone: `ws["E5"].value = f"=Assumptions!B{asm_map['Revenue YoY %']}"`
+  - **IS forecast Revenue (when REVENUE_BUILD=TRUE)**: `ws_is["E5"].value = f"=Revenue_Build!{col}{rev_build_map['Auto: Total']}"`
 - **Embedded in compound formula**: reference without leading `=`
   - `ws["E5"].value = f"=D5*(1+Assumptions!B{asm_map['Revenue YoY %']})"`
 - **NEVER mix**: `f"=D5*(1+=Assumptions!B2)"` → Excel parse error (extra `=` inside)
 
-**Before writing Python code for any IS / BS / CF tab, run this self-check:**
-- [ ] Every forecast column cell → string starting with `=`, referencing Assumptions
+**Inline ↳ pattern (mandatory on all tabs with forecast formulas):**
+Forecast formulas reference SAME-SHEET rows only. Every Assumptions driver gets an inline `↳`
+mirror row (`=Assumptions!<col><row>`). The forecast formula references the ↳ row on the same sheet.
+
+**Before writing Python code for any IS / BS / CF / Revenue_Build tab, run this self-check:**
+- [ ] Every forecast formula references SAME-SHEET rows only (inline ↳ pattern)
+- [ ] `↳` rows are the ONLY cells with cross-tab `=Assumptions!*` references
 - [ ] Every historical column cell → string starting with `=Raw_Info!`
+- [ ] When `REVENUE_BUILD=TRUE`, IS Q forecast Revenue cells → `=Revenue_Build!*` (R12 strict)
+- [ ] When `REVENUE_BUILD=TRUE`, IS FY forecast Revenue cells → `=SUM(Q1:Q4)` (summary exception)
 - [ ] Zero raw floats or ints assigned to IS/BS/CF non-input rows
 
 **The ONLY cells permitted to hold hardcoded numeric values:**
@@ -296,7 +308,7 @@ wb.save(filepath)
 ## ██ GLOBAL BUILD SEQUENCE ██
 ## ██ Mandatory. No skipping. No parallel tabs. ██
 
-The model is built across **5 sessions**. Each session starts with a clean context, loads
+The model is built across **5–6 sessions** (SESSION A2 is conditional). Each session starts with a clean context, loads
 **only its own reference file**, and communicates state through the `_State` tab in Excel
 **plus two sidecar files: `_model_log.md` and `_pending_links.json`**.
 
@@ -304,13 +316,21 @@ The model is built across **5 sessions**. Each session starts with a clean conte
 build one tab, others build several. Never write all tabs at once within a session. Tabs and
 sections are added incrementally across sessions, with _State + sidecar files carrying state between them.
 
+**Assumptions is append-only across sessions** — SESSION A creates core drivers. SESSION A2 appends per-segment Vol/ASP YoY drivers. SESSION B/C may append additional rows. Never delete existing rows; update ASM_MAP after every append.
+
 ```
 PRE-FLIGHT  — ① MARKET_GATE (mandatory first step, see below)
               ② NLM kickoff 问答 (首次运行必做，结果写入 _State)
               └─ included in references/session-a.md
 
-SESSION A   — Raw_Info + Assumptions           → Read references/session-a.md
-SESSION B   — IS                               → Read references/session-b.md
+SESSION A   — Raw_Info + Assumptions(core)       → Read references/session-a.md
+              └─ Phase 2.5: set REVENUE_BUILD TRUE/FALSE
+SESSION A2  — Revenue_Build (CONDITIONAL)        → Read references/session-a2.md
+              └─ Triggered if REVENUE_BUILD=TRUE (default for multi-segment models)
+              └─ Builds Vol×ASP / Q YoY / guide+ramp per segment
+              └─ IS forecast Revenue will link here (R12)
+SESSION B   — IS                                 → Read references/session-b.md
+              └─ If REVENUE_BUILD=TRUE: Q forecast Revenue = =Revenue_Build!* (R12)
 SESSION C   — BS (Cash placeholder)            → Read references/session-c.md
                └─ writes _pending_links.json for Cash + any CF-dependent cells
 SESSION D   — CF + back-fill _pending_links    → Read references/session-d.md
@@ -487,12 +507,13 @@ If assertion fails: file was externally edited or _State is stale. Rebuild _Stat
 
 ```
 [1] Summary        ← built last; all figures link to model cells
-[2] Assumptions    ← every forecast driver; single source of truth
-[3] IS             ← Income Statement
-[4] BS             ← Balance Sheet
-[5] CF             ← Cash Flow Statement (indirect)
-[6] Returns        ← ROE / ROA / ROIC / DuPont
-[7] Cross_Check    ← assumption validation + revision log
+[2] Assumptions    ← every forecast driver; single source of truth; APPEND-ONLY across sessions
+[3] Revenue_Build  ← (CONDITIONAL) Vol×ASP per segment → segment totals; IS pulls forecast Revenue from here
+[4] IS             ← Income Statement
+[5] BS             ← Balance Sheet
+[6] CF             ← Cash Flow Statement (indirect)
+[7] Returns        ← ROE / ROA / ROIC / DuPont
+[8] Cross_Check    ← assumption validation + revision log
 [8] Raw_Info       ← source extraction (built first; never re-read source after)
 [_State]           ← session metadata; last tab; delete after MODEL_COMPLETE
 ```
@@ -578,18 +599,52 @@ If |Other Op Inc| > 10% of EBIT → investigate; model the largest component exp
 
 BS is always annual. Quarterly CF: Beg_Cash Q1 = prior FY BS Cash; Q2/Q3/Q4 = prior quarter CF Ending Cash (back-filled within SESSION D year-by-year loop).
 
+**R12 — Revenue_Build is the source of forecast segment revenue (when triggered):**
+
+Revenue_Build is built in SESSION A2 (before IS). IS forecast Revenue rows link back to it.
+This separates "how revenue is built" (Vol/ASP/Q YoY/guide+ramp) from "what flows to IS" (totals).
+
+- **Trigger**: SESSION A Phase 2.5 sets `REVENUE_BUILD: TRUE` (default-on for ≥2 segments or any vol×price)
+- **Quarterly architecture**: forecast at Q level (Q YoY for mature, guide+ramp for new biz), FY = SUM(Q)
+- **IS link**: Q forecast Revenue = `=Revenue_Build!<Q_col><total_row>` (strict R12). FY = `=SUM(Q1:Q4)`.
+- **Inline ↳ pattern**: Revenue_Build forecast formulas reference same-sheet `↳` mirror rows only. `↳` rows are the sole cross-tab link to Assumptions.
+- **QC defense**: QC-20 (Revenue_Build integrity), QC-21 (IS→Revenue_Build link), QC-22 (historical ↳ completeness)
+
+See `references/session-a2.md` for full spec.
+
 ---
 
 ## KEY FORMULAS
 
 ```
-Revenue:   Sub_curr = Sub_prior × (1 + YoY%)  |  Vol×Price: Rev = Vol × ASP
+Inline ↳ pattern (ALL tabs):
+  Data row forecast:      =same_sheet_formula (references ↳ row, Vol row, ASP row, etc.)
+  ↳ row (inline mirror):  =Assumptions!<col><row>    ← ONLY cross-tab link per driver
+
+Revenue_Build (quarterly, mature segment Q YoY):
+  Vol Q forecast:   =prior_yr_same_Q * (1 + same_sheet_↳_Vol_YoY_row)
+  ASP Q forecast:   =prior_yr_same_Q * (1 + same_sheet_↳_ASP_YoY_row)
+  Rev Q:            =Vol_row * ASP_row
+  FY:               =SUM(Q1:Q4)     ← FY is ALWAYS derived
+
+Revenue_Build (new biz, guide + ramp):
+  Q forecast:       =same_sheet_↳_FY_guide * same_sheet_↳_Q_share%
+  FY:               =SUM(Q1:Q4)
+
+IS Revenue (REVENUE_BUILD=TRUE, quarterly):
+  Q forecast:       =Revenue_Build!<Q_col><seg_total_row>   ← R12 strict
+  FY forecast:      =SUM(IS Q1:Q4)                          ← summary exception
+
+IS COGS/SGA/R&D (inline ↳ pattern):
+  COGS Q forecast:  =-Rev * (1 - same_sheet_↳_GM%)
+  ↳ GM %:           =Assumptions!<col><gm_row>
+
 WC → BS:   AR = Rev × AR_Days/365  |  Inv = COGS × Inv_Days/365  |  AP = COGS × AP_Days/365
 CF WC:     Δ Asset = −(curr − prior)  |  Δ Liability = +(curr − prior)
 PP&E:      Net = Prior × (1 − Depr_Rate) + |Capex|   ← PPE-specific rate, NOT total D&A
 Equity:    Reserves = Prior + Attr_Owners − Div  |  NCI = Prior + Attr_NCI − Div_NCI
 CN GAAP:   Other Op Inc = Source 营业利润 − (Rev − COGS − Tax&Surcharge − OpEx − Impairment)
-Quarterly: Q_seg = Q_total × (FY_seg / FY_total)  |  FY = Q1+Q2+Q3+Q4
+Quarterly: FY = SUM(Q1:Q4)  ← Q-level is the driver, FY is derived
 YTD→Q:    Q1=YTD_Q1 · Q2=H1−Q1 · Q3=YTD_Q3−H1 · Q4=FY−YTD_Q3
 ROIC:      NOPAT / AVERAGE(IC_curr, IC_prior)
 Checks:    BS: TA−TLE=0 | CF: EndCash−BSCash=0 | NI: Model−Source=0 | Rev: Model−Source=0
@@ -597,9 +652,9 @@ Checks:    BS: TA−TLE=0 | CF: EndCash−BSCash=0 | NI: Model−Source=0 | Rev:
 
 ---
 
-## PITFALLS & DEFENSE INVENTORY (v0/v1/v1.1)
+## PITFALLS & DEFENSE INVENTORY
 
-48+ pitfall index is now in **`references/pitfalls.md`** (categorized BLOCKER / WARNING / Doc-only). Each pitfall is mapped to either a PreToolUse Bash hook (preventive) or a `qc_suite.py` QC check (detective).
+58+ pitfall index is now in **`references/pitfalls.md`** (categorized BLOCKER / WARNING / Doc-only). Each pitfall is mapped to either a PreToolUse Bash hook (preventive) or a `qc_suite.py` QC check (detective).
 
 Severity model:
 - **BLOCKER** (exit 2) — next session cannot start; durable marker not written
@@ -613,11 +668,12 @@ Each session ends with `per_session_gate.py` running the right QC subset.
 | Session | Gate entry | QC subset |
 |---|---|---|
 | 启动前 | hooks auto-fire | H1 hardcode_guard / H2 state_guard / H3 unit_guard / H5 granularity_guard |
-| A 末尾 | `python scripts/per_session_gate.py --session A --xlsx <p>` | PF-1..8 (preflight) |
-| B 末尾 | `python scripts/per_session_gate.py --session B --xlsx <p>` | QC-2 / 5 / 6 / 11 / 12 / 14 / 15 / 17 |
+| A 末尾 | `python scripts/per_session_gate.py --session A --xlsx <p>` | PF-1..9 (preflight, incl. REVENUE_BUILD flag) |
+| A2 末尾 (conditional) | `python scripts/per_session_gate.py --session A2 --xlsx <p>` | QC-2 / 20 / 22 (Revenue_Build integrity + hist inline completeness) |
+| B 末尾 | `python scripts/per_session_gate.py --session B --xlsx <p>` | QC-2 / 5 / 6 / 11 / 12 / 14 / 15 / 17 / 21 / 22 (IS→Revenue_Build link) |
 | C 末尾 | `python scripts/per_session_gate.py --session C --xlsx <p>` | QC-2 / 6 / 7 + `_pending_links.json` written |
 | D 末尾 | `python scripts/per_session_gate.py --session D --xlsx <p>` | QC-1 / 2 / 3 / 4 / 6 / 13 + `_pending_links.json` cleared |
-| E 末尾 | `python scripts/per_session_gate.py --session E --xlsx <p>` | QC-1..19 full + data-validator |
+| E 末尾 | `python scripts/per_session_gate.py --session E --xlsx <p>` | QC-1..22 full + data-validator |
 
 Each session's startup runs `per_session_gate.py --verify-prev --session <X> --xlsx <p>` to check the previous gate's `GATE_<prev>_PASSED` marker in state.json.
 

@@ -53,7 +53,7 @@ Step 3: Merge — 交叉验证，冲突标注，写入 Raw_Info
 ```python
 import yfinance as yf
 
-ticker = "[TICKER]"   # e.g. "BABA", "0700.HK", "600519.SS"
+ticker = "[TICKER]"   # e.g. "YMM", "9999.HK", "688208.SS"
 tk = yf.Ticker(ticker)
 
 # 看 quarterly_financials 的列（每列是一个季度末日期）
@@ -111,25 +111,21 @@ print(f"✅ 颗粒度锁定: IS/CF={detected}, BS=Annual")
 
 ### 1A — NLM Batch（如用户选了 A）
 
-安装依赖：
-```bash
-pip install notebooklm   # 若尚未安装
-```
-
 健康检查：
 ```python
-import os
+import sys, os
+sys.path.insert(0, '/sessions/cool-peaceful-darwin/.local/lib/python3.10/site-packages')
 python3 -c "
 from notebooklm import NotebookLMClient
 print('NLM_PY: OK' if os.path.exists(os.path.expanduser('~/.notebooklm/storage_state.json')) else 'AUTH_MISSING')
 " 2>/dev/null || echo "NLM_PY: FAIL"
 ```
-如果 AUTH_MISSING → 需先完成 NotebookLM 登录授权（运行一次 `NotebookLMClient.from_storage()`）。
 如果 FAIL → 跳过 NLM，降级到 MEDIUM confidence。
 
 确认 Notebook ID（用户提供 link 直接解析；提供关键词时搜索）：
 ```python
-import asyncio
+import asyncio, sys
+sys.path.insert(0, '/sessions/cool-peaceful-darwin/.local/lib/python3.10/site-packages')
 
 async def find_notebook(keyword):
     from notebooklm import NotebookLMClient
@@ -147,7 +143,8 @@ asyncio.run(find_notebook("[COMPANY_KEYWORD]"))
 
 12 题并发（3 题 0A 财务数字 + 9 题 0B 运营情报）：
 ```python
-import asyncio, json
+import asyncio, sys, json
+sys.path.insert(0, '/sessions/cool-peaceful-darwin/.local/lib/python3.10/site-packages')
 
 NOTEBOOK_ID = "[NLM_NOTEBOOK_ID]"
 
@@ -229,7 +226,7 @@ asyncio.run(run_nlm())
 ```python
 import pandas as pd, json
 
-user_excel_path = "[UPLOADED_FILE_PATH]"  # e.g., /path/to/your/financials.xlsx
+user_excel_path = "[上传路径，通常 /sessions/cool-peaceful-darwin/mnt/uploads/]"
 sheets = pd.read_excel(user_excel_path, sheet_name=None)
 
 # 识别结构：行=科目/列=年份（模式A）或列=科目/行=年份（模式B，需转置）
@@ -357,7 +354,7 @@ CONFLICT_COUNT: 0                  ← 未解决冲突数；必须为 0 才能�
 5. Write ASM_MAP to _State as JSON: `{"driver label": row_number, ...}`
 6. Write metadata to _State:
 ```
-SKILL_VERSION: 4.7
+SKILL_VERSION: 4.6
 DATA_SOURCES: [NLM, EXCEL, WEB]
 DATA_CONFIDENCE: HIGH / MEDIUM / LOW
 IS_GRANULARITY: [Quarterly / Semi-annual / Annual]
@@ -397,17 +394,72 @@ Row M+1: Rev Guidance FY2024   | [原话 + 来源日期]       | [NLM]
 
 ## Assumptions Tab (Phase 1)
 
-Revenue: per segment YoY% (or Vol × ASP). Margins: GM%, each opex % of rev.
-BS: AR/Inv/AP days, capex, debt schedule. Other: NCI ratio, share count, FX.
+**Phase 1 builds the CORE drivers only.** Segment-level Vol/ASP YoY% are appended in SESSION A2 (Phase 2.5 below decides).
 
-CN GAAP: Other Op Inc assumption (R8 plug), quarterly seasonality % per segment.
+Phase 1 rows:
+- Margins: GM%, each opex % of rev
+- BS: AR/Inv/AP days, capex, debt schedule
+- Other: NCI ratio, share count, FX, dividend payout
+- CN GAAP: Other Op Inc assumption (R8 plug)
+- Quarterly seasonality % per segment (if IS_GRANULARITY = Quarterly)
 
-Granularity: if IS_GRANULARITY = Quarterly → add seasonality % rows (Q1/Q2/Q3/Q4 % of FY) per revenue segment.
+**Do NOT add segment-level Revenue YoY% / Vol YoY% / ASP YoY% in Phase 1** — those belong in SESSION A2 (after Phase 2.5 confirms REVENUE_BUILD=TRUE). If REVENUE_BUILD=FALSE (single revenue line), then add a single "Revenue YoY %" row here.
+
+**Assumptions is append-only across sessions** — SESSION A2 / B / C may append additional rows. Never delete; always update ASM_MAP after appending.
+
+---
+
+## Phase 2.5 — Revenue_Build Trigger (decide SESSION A2 path)
+
+After Assumptions Phase 1 written, ask user via `AskUserQuestion`:
+
+```
+本模型是否需要单独建 Revenue_Build tab?
+（Revenue_Build = Vol × ASP per segment OR per-segment YoY%, IS forecast Revenue 行强制链回此 tab）
+
+□ A) 默认开（推荐）— 多 segment 模型 / 任一 segment 有 vol×price 披露 / 需要细粒度建模
+     → 进 SESSION A2, 建 Revenue_Build, 然后 SESSION B IS 引用之
+□ B) 关闭 — 单 revenue 线模型 / quick screening / 极简结构
+     → 直接进 SESSION B, IS forecast Revenue = =D5*(1+Assumptions!*YoY%)
+```
+
+如果用户选 A, 再追问每个 segment 的驱动模式（多 segment 时一次性问完）:
+```
+对每个 segment 选驱动模式:
+  - "vol_price": 子品牌/产品线级别有 Volume + ASP 披露（如汽车子品牌、产品线细分）
+  - "yoy":       只有 segment 级 Revenue, 用 YoY% 驱动（如 Handset, Battery）
+```
+
+写入 _State:
+```python
+write_state_key(wb, "REVENUE_BUILD", "TRUE")  # or "FALSE"
+write_state_key(wb, "REV_BUILD_SEGMENTS", json.dumps([
+    {"name": "Auto", "type": "vol_price",
+     "sub_segments": ["Ocean", "Dynasty", "Denza", "Yangwang", "Fangchengbao",
+                      "NEV CV-Bus", "NEV CV-Truck", "Overseas-Europe", "Overseas-Others"]},
+    {"name": "Handset", "type": "yoy", "sub_segments": []},
+    {"name": "Battery", "type": "yoy", "sub_segments": []},
+]))
+```
+
+**Decision matrix:**
+| Scenario | REVENUE_BUILD | Next session |
+|---|---|---|
+| ≥2 forecast segments + any vol×price disclosure | TRUE (default) | A2 → B |
+| ≥2 forecast segments, all pure YoY | TRUE (recommended) | A2 → B |
+| Single revenue line, simple shell | FALSE | B (skip A2) |
+| User explicitly requests detailed build-up | TRUE | A2 → B |
+| User explicitly requests quick model | FALSE | B (skip A2) |
+
+⚠ Default to TRUE unless user explicitly opts out. The cost of running A2 is small;
+   the cost of NOT having Revenue_Build in a multi-segment model is high (R12 violation
+   risk, IS forecast logic gets tangled, sub-brand detail gets buried).
+
 ---
 
 ## END-OF-SESSION GATE (mandatory)
 
-After Raw_Info + Assumptions are written, run preflight:
+After Raw_Info + Assumptions(core) + REVENUE_BUILD decision written, run preflight:
 
 ```bash
 python scripts/per_session_gate.py --session A --xlsx <model.xlsx>
@@ -418,7 +470,12 @@ Internally calls `preflight_check.py`:
 - PF-3 DATA_SOURCES registered (BLOCKER) | PF-4 Raw_Info non-empty >= 95% (BLOCKER)
 - PF-5 NLM_0B_DONE (WARNING) | PF-6 YTD conversion (WARNING)
 - PF-7 RAW_MAP/ASM_MAP spot-check (BLOCKER) | PF-8 NCI ratio set (BLOCKER)
+- PF-9 REVENUE_BUILD key registered (BLOCKER) — must be TRUE or FALSE, set by Phase 2.5
 
-exit 2 blocks SESSION B; exit 1 warning only; exit 0 writes GATE_A_PASSED to _State.
+exit 2 blocks A2/B; exit 1 warning only; exit 0 writes GATE_A_PASSED to _State.
+
+**Next session routing:**
+- `REVENUE_BUILD: TRUE` → SESSION A2 (Revenue_Build) → then SESSION B
+- `REVENUE_BUILD: FALSE` → SESSION B directly (skip A2)
 
 See `gate-spec.md`.

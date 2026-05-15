@@ -1,12 +1,12 @@
 # 3-Statements Pitfall Index
 
-48 项 pitfall 的完整索引。每项标注 (a) 严重程度 (b) 防御层 (c) 触发 session (d) 修复入口。
+50 项 pitfall 的完整索引。每项标注 (a) 严重程度 (b) 防御层 (c) 触发 session (d) 修复入口。
 
 参考：`gate-spec.md` 定义 severity 与防御层语义；`format-spec.md` 定义 QC-14..19 基准。
 
 ---
 
-## BLOCKER (33 项，硬阻断，hook 或 gate 自动拦截)
+## BLOCKER (35 项，硬阻断，hook 或 gate 自动拦截)
 
 ### Rule Zero — 硬编码（最严重）
 
@@ -71,6 +71,17 @@
 | P32 | Σ(segments) ≠ Total Revenue 全期 | QC-11 | B/E | 每个 segment 用独立 source 数据 |
 | P33 | _pending_links.json SESSION C 没写 → SESSION D 无法 batch back-fill | per_session_gate (gate-C) | C | SESSION C 末尾写 deferred refs |
 
+### Revenue_Build / R12（V4.8 新增）
+
+| # | Pitfall | Defense | Session | Fix |
+|---|---|---|---|---|
+| P34 | Revenue_Build tab 存在但 IS forecast Revenue 直接走 Assumptions YoY%（orphan tab）| QC-21 | B | IS forecast Rev cells = `=Revenue_Build!<col><total_row>` |
+| P35 | Revenue_Build forecast 单元格 hardcode (vol/ASP/Rev) | QC-20 | A2 | 改公式：`=prior*(1+Assumptions!YoY)` 或 `=Vol*ASP/scale` |
+| P36 | REVENUE_BUILD=TRUE 但 Revenue_Build tab 不存在 | QC-20 + session_a2 BLOCKER | A2 | 按 session-a2.md 建 tab |
+| P37 | REV_BUILD_MAP 未写入 _State（SESSION A2 Step 11 漏）| session_a2 + QC-20 | A2 | 写 `{seg: total_row}` 到 state.json |
+| P38 | Revenue_Build COL_MAP ≠ IS COL_MAP（跨 tab 引用错列）| 间接：reconciliation Δ% | A2 | Revenue_Build 列结构必须按 BS_COL_MAP/IS COL_MAP 同步 |
+| P39 | Revenue_Build Section 5 reconciliation Δ% > 1% 历史年（built-up ≠ source）| session_a2 assert | A2 | 检查缺 sub-segment / 单位 / 消除项 |
+
 ---
 
 ## WARNING (9 项，软警告，sidecar 报告)
@@ -108,9 +119,9 @@
 
 | 类别 | 数量 | 防御层分布 |
 |---|---|---|
-| BLOCKER | 33 | Hook: 8 (P1-P9, P15-P16, P27)；Gate: 25 |
+| BLOCKER | 39 | Hook: 8 (P1-P9, P15-P16, P27)；Gate: 31 (incl. P34-P39 R12 family) |
 | WARNING | 13 | Gate: 13 |
 | Doc-only | 6 | 不进 gate |
-| **合计** | **52** | hook 占 15%，gate 占 73%，doc 占 12% |
+| **合计** | **58** | hook 占 14%，gate 占 76%，doc 占 10% |
 
 H1/H4 hook 命中率最高的 4 项是 Rule Zero 系列 (P1-P4)，单这 4 项就占历史故障 ≥40%。

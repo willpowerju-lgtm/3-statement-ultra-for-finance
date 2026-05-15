@@ -35,10 +35,11 @@ SCHEMA_VERSION = 1
 # be native types in state.json.
 JSON_FIELDS = frozenset([
     "RAW_MAP", "ASM_MAP",
-    "BS_COL_MAP", "CF_COL_MAP",
+    "BS_COL_MAP", "CF_COL_MAP", "REV_BUILD_COL_MAP",
     "KEY_CELLS_IS", "KEY_CELLS_BS", "KEY_CELLS_CF",
     "HIST_YEARS", "FCST_YEARS",
     "DATA_SOURCES",
+    "REV_BUILD_MAP", "REV_BUILD_SEGMENTS",
 ])
 
 
@@ -51,7 +52,7 @@ def state_json_path(xlsx_path: Union[str, Path]) -> Path:
 def _parse_legacy_state_sheet(xlsx_path: Union[str, Path]) -> dict:
     """Parse legacy `_State` sheet (KEY: VALUE per cell A) into a dict.
     Values for JSON_FIELDS are parsed from string to native types.
-    File handle is always closed via try/finally ."""
+    File handle is always closed via try/finally (Codex v1.1 INFO fix)."""
     try:
         import openpyxl
     except ImportError:
@@ -146,6 +147,33 @@ def write_key(xlsx_path: Union[str, Path], key: str, value) -> None:
     state = load_state(xlsx_path)
     state[key] = value
     save_state(xlsx_path, state)
+
+
+def normalize_revenue_build(value) -> str:
+    """Coerce REVENUE_BUILD state value to canonical "TRUE"/"FALSE"/"INVALID"/"UNSET".
+
+    Accepts:
+      - None / missing key → "UNSET"
+      - bool True → "TRUE"
+      - bool False → "FALSE"
+      - str (case-insensitive) in {"TRUE", "FALSE"} → uppercased
+      - anything else (str "YES"/"1"/"0"/int/float/list/...) → "INVALID"
+
+    Callers must handle each case explicitly. Do NOT use truthiness — boolean True
+    and string "TRUE" must both produce "TRUE"; string "YES" must NOT (it's a
+    user error worth surfacing as INVALID rather than silently routing as FALSE
+    or crashing on `.upper()`).
+    """
+    if value is None:
+        return "UNSET"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, str):
+        s = value.strip().upper()
+        if s in ("TRUE", "FALSE"):
+            return s
+        return "INVALID"
+    return "INVALID"
 
 
 def has_legacy_state_sheet(xlsx_path: Union[str, Path]) -> bool:

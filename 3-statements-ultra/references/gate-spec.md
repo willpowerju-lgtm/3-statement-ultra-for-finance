@@ -69,11 +69,12 @@ PASS     exit 0   全部通过
 | Session | 入口 | 启用的 hooks | 跑的 QC |
 |---|---|---|---|
 | 启动前（每条 bash） | — | H1, H2, H3, H4, H5 | — |
-| **A** 末尾 | `python scripts/per_session_gate.py --session A --xlsx <p>` | (同上) | PF-1..8（preflight） |
-| **B** 末尾 | `python scripts/per_session_gate.py --session B --xlsx <p>` | (同上) | QC-2,5,6,11,12 |
+| **A** 末尾 | `python scripts/per_session_gate.py --session A --xlsx <p>` | (同上) | PF-1..9（preflight, incl. REVENUE_BUILD flag） |
+| **A2** 末尾（条件触发）| `python scripts/per_session_gate.py --session A2 --xlsx <p>` | (同上) | QC-2,20 + REV_BUILD_MAP 校验 (skip if REVENUE_BUILD=FALSE) |
+| **B** 末尾 | `python scripts/per_session_gate.py --session B --xlsx <p>` | (同上) | QC-2,5,6,11,12,21 (R12 IS→Revenue_Build link) |
 | **C** 末尾 | `python scripts/per_session_gate.py --session C --xlsx <p>` | (同上) | QC-2,6,7 + _pending_links 写入校验 |
 | **D** 末尾 | `python scripts/per_session_gate.py --session D --xlsx <p>` | (同上) | QC-1,2,3,4,6,13 + back-fill 清零 |
-| **E** 末尾 | `python scripts/per_session_gate.py --session E --xlsx <p>` | (同上) | QC-1..19（全集）+ data-validator |
+| **E** 末尾 | `python scripts/per_session_gate.py --session E --xlsx <p>` | (同上) | QC-1..21（全集）+ data-validator |
 
 ## 实现状态 (v0 → v1)
 
@@ -92,6 +93,11 @@ PASS     exit 0   全部通过
 - QC-12 Effective tax rate 偏离
 - QC-13 R3 Others 历史来源
 - QC-16 Input cell 颜色 = FF0070C0
+
+**v4.8 新增 (R12 Revenue_Build family)**：
+- QC-20 Revenue_Build forecast cells = 公式 (no hardcode) + REV_BUILD_MAP populated 校验
+- QC-21 IS forecast Revenue 行 = `=Revenue_Build!*` (当 REVENUE_BUILD=TRUE)
+- 两者均 conditional：REVENUE_BUILD!=TRUE 时自动 PASS skip，保持向后兼容
 
 移植源：`references/session-e.md` L225-403 的 QC 实现代码。v1 时直接拷贝进 `qc_suite.py` 作为独立函数，append 到 `FULL_QCS` 列表即可（架构已就位）。
 

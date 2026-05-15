@@ -57,9 +57,9 @@ class Finding:
 
 
 FINANCIAL_TAB_PATTERNS = [
-    r"^IS$", r"^BS$", r"^CF$", r"^CFS$", r"^Assumptions$",
+    r"^IS$", r"^BS$", r"^CF$", r"^CFS$", r"^Assumptions$", r"^Revenue_Build$",
     r"IS\s*&?\s*drivers?", r"Balance\s*Sheet", r"Income\s*Statement",
-    r"Cash\s*Flow", r"Historical\s+(IS|BS|CFS|CF)",
+    r"Cash\s*Flow", r"Historical\s+(IS|BS|CFS|CF)", r"Revenue\s*Build",
 ]
 
 UNIT_PATTERN = re.compile(
@@ -377,7 +377,7 @@ def qc1_numeric_reconciliation(wb, tabs, xlsx_path=None) -> list[Finding]:
     The model's spreadsheet has =Total_Assets - Total_LE and =Ending_Cash - BS_Cash
     formulas in these rows. We verify they evaluate to 0 across all periods.
 
-    Note: prior implementation (ported from session-e.md) was
+    Codex review note: prior implementation (ported from session-e.md) was
     tautological — it solved Others as the balance plug then checked balance,
     which by construction returned 0 regardless of model defects. This version
     reads actual computed cell values instead."""
@@ -840,6 +840,407 @@ def qc13_others_historical_source(wb, tabs, xlsx_path=None) -> list[Finding]:
     return out
 
 
+_REVENUE_BUILD_REF_RE = re.compile(r"^\s*=\s*'?Revenue_Build'?\s*!", re.IGNORECASE)
+
+_QUARTER_RE = re.compile(r"^[1-4]Q", re.IGNORECASE)
+_SUMMARY_RE = re.compile(r"^(FY|H[12]\b)", re.IGNORECASE)
+
+def _is_summary_period(period_name: str) -> bool:
+    """True if the period is a summary column (FY or H1/H2 semi-annual).
+    Quarter columns (1Q/2Q/3Q/4Q) return False.
+    Unknown patterns default to False (conservative: treated as Q-like → R12 strict)."""
+    if not period_name:
+        return False
+    return bool(_SUMMARY_RE.match(period_name.strip()))
+
+# Codex round-2 B3 refinement: aggregate-key filter must be precise. Using prefix-match
+# on "total" was too broad — a legitimate segment named "Total Vehicles" (e.g., NEV vs ICE
+# total) would be falsely excluded as aggregate. Match only well-defined aggregate labels:
+#   - "Grand Total" / "Total Revenue" exact
+#   - any label starting with "Reconciliation"
+#   - any label ending with "Delta" / "Δ" / "Delta %"  (reconciliation deltas)
+#   - "Check ..." / "Sum ..." prefixes
+# Crucially: bare "Auto Total" / "Handset Total" / "Total Vehicles" segment keys DO NOT match.
+_AGGREGATE_KEY_RE = re.compile(
+    r"^(?:"
+    r"grand[\s_]*total\b.*"       # Grand Total / Grand Total Revenue / Grand Total Auto / etc.
+    r"|total[\s_]*revenue\b.*"    # Total Revenue (sum row)
+    r"|reconciliation\b.*"        # Reconciliation Delta % / Reconciliation Check / etc.
+    r"|.*(?:delta|δ)\s*%?"        # X Delta / X Δ / X Delta % (reconciliation deltas)
+    r"|check\b.*"                 # Check rows
+    r"|sum\b.*"                   # Sum rows
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def qc20_revenue_build_integrity(wb, tabs, xlsx_path=None) -> list[Finding]:
+    """R12 — Revenue_Build forecast cells must be formulas, never hardcoded.
+
+    Scans Revenue_Build tab if REVENUE_BUILD=TRUE in state. Each forecast-column cell
+    in the data range (excluding labels/headers/notes) must be a string starting with '='.
+    Historical-column cells are allowed to be hardcoded (data source rows).
+
+    Codex B1 fix: REVENUE_BUILD value normalized via state_io.normalize_revenue_build
+    (handles bool/str/None uniformly; INVALID values surface as a BLOCKER, not silent skip).
+
+    BLOCKER if any forecast cell holds an int/float instead of a formula string.
+    """
+    if state_io is None or xlsx_path is None:
+        return [Finding("QC-20", "PASS", msg="skipped — state_io / xlsx_path required")]
+    try:
+        state = state_io.load_state(xlsx_path)
+    except Exception:
+        return [Finding("QC-20", "PASS", msg="skipped — state.json not loadable")]
+    if not state:
+        return [Finding("QC-20", "PASS", msg="skipped — state empty")]
+    rb_norm = state_io.normalize_revenue_build(state.get("REVENUE_BUILD"))
+    if rb_norm == "INVALID":
+        return [Finding("QC-20", "BLOCKER",
+            msg=f"REVENUE_BUILD={state.get('REVENUE_BUILD')!r} is invalid (expected TRUE/FALSE)",
+            fix_hint="Re-run SESSION A Phase 2.5 to set REVENUE_BUILD to TRUE or FALSE")]
+    if rb_norm != "TRUE":
+        return [Finding("QC-20", "PASS",
+            msg=f"skipped — REVENUE_BUILD={rb_norm}; Revenue_Build not in use")]
+    if "Revenue_Build" not in wb.sheetnames:
+        return [Finding("QC-20", "BLOCKER", sheet="Revenue_Build",
+            msg="REVENUE_BUILD=TRUE in state but Revenue_Build tab missing",
+            fix_hint="Build the Revenue_Build tab per references/session-a2.md")]
+    ws = wb["Revenue_Build"]
+    # Revenue_Build may have different column positions than IS (e.g., a retrofitted
+    # model: FY2026E = col T in Revenue_Build but col X in IS). Use REV_BUILD_COL_MAP if
+    # available; fall back to BS_COL_MAP for models where columns are aligned.
+    rb_col_map = state.get("REV_BUILD_COL_MAP")
+    if not isinstance(rb_col_map, dict) or not rb_col_map:
+        rb_col_map = state.get("BS_COL_MAP") if isinstance(state.get("BS_COL_MAP"), dict) else {}
+    fcst_years = state.get("FCST_YEARS") if isinstance(state.get("FCST_YEARS"), list) else []
+    fcst_cols = [_col_idx(rb_col_map, yr) for yr in fcst_years if _col_idx(rb_col_map, yr)]
+    if not fcst_cols:
+        return [Finding("QC-20", "PASS",
+            msg="skipped — no forecast columns resolved from REV_BUILD_COL_MAP/BS_COL_MAP + FCST_YEARS")]
+    # Build reverse period map once (hoisted from row loop per Codex W1).
+    _rb_reverse = {}
+    for period, col_l in rb_col_map.items():
+        ci = _col_idx(rb_col_map, period)
+        if ci is not None:
+            _rb_reverse[ci] = period
+    q_fcst_cols = [c for c in fcst_cols if not _is_summary_period(_rb_reverse.get(c, ""))]
+    # Scan all data rows in forecast columns.
+    out = []
+    hits = 0
+    max_r = min(ws.max_row or 1, 200)
+    for r in range(4, max_r + 1):
+        label = ws.cell(r, 1).value
+        if label is None:
+            continue
+        label_str = str(label).strip()
+        if not label_str or label_str.startswith("•") or label_str.startswith("—"):
+            continue
+        is_section_hdr = (label_str.isupper() and len(label_str) > 5 and
+                          not any(ws.cell(r, c).value is not None for c in fcst_cols))
+        if is_section_hdr:
+            continue
+        if not any(ws.cell(r, c).value is not None for c in fcst_cols):
+            continue
+        # Quarterly: check which column types have data in this row
+        summary_fcst_cols = [c for c in fcst_cols if c not in q_fcst_cols]
+        has_any_q_data = any(ws.cell(r, c).value is not None for c in q_fcst_cols)
+        has_any_summary_data = any(ws.cell(r, c).value is not None for c in summary_fcst_cols)
+        for col in fcst_cols:
+            v = ws.cell(r, col).value
+            col_letter = openpyxl.utils.get_column_letter(col)
+            period_name = _rb_reverse.get(col, "")
+            is_summary = _is_summary_period(period_name)
+            if v is None:
+                if is_summary and has_any_summary_data:
+                    out.append(Finding("QC-20", "BLOCKER", sheet="Revenue_Build",
+                        cell=f"{col_letter}{r}",
+                        msg=f"blank summary forecast cell in Revenue_Build '{label_str[:30]}' (must be formula)",
+                        fix_hint="Write a formula: =SUM(Q1:Q4) or =Assumptions!<col><row>"))
+                    hits += 1
+                elif not is_summary and has_any_q_data:
+                    out.append(Finding("QC-20", "BLOCKER", sheet="Revenue_Build",
+                        cell=f"{col_letter}{r}",
+                        msg=f"blank Q forecast cell in Revenue_Build '{label_str[:30]}' (must be formula)",
+                        fix_hint="Write a formula: =prior_Q*(1+Assumptions!YoY) or =Vol*ASP"))
+                    hits += 1
+                # else: structural blank (Q-only row blank FY, or summary-only row blank Q) → structural blank → OK
+            elif isinstance(v, (int, float)):
+                out.append(Finding("QC-20", "BLOCKER", sheet="Revenue_Build",
+                    cell=f"{col_letter}{r}",
+                    msg=f"hardcoded value {v} in Revenue_Build forecast cell (R12 violation)",
+                    fix_hint="Replace with formula string: =prior*(1+Assumptions!YoY) or =Vol*ASP/scale"))
+                hits += 1
+            elif isinstance(v, str) and not v.strip().startswith("="):
+                out.append(Finding("QC-20", "BLOCKER", sheet="Revenue_Build",
+                    cell=f"{col_letter}{r}",
+                    msg=f"text constant '{v[:40]}' in forecast cell (R12: must be formula starting with '=')",
+                    fix_hint="Replace with formula string starting with '='"))
+                hits += 1
+            # else: v is a formula string starting with "=" → OK
+            if hits >= 20:
+                out.append(Finding("QC-20", "BLOCKER",
+                    msg=f"...truncated; {hits}+ non-formula cells in Revenue_Build forecast"))
+                return out
+    # Also verify REV_BUILD_MAP is populated
+    rbm = state.get("REV_BUILD_MAP")
+    if not rbm or not isinstance(rbm, dict) or len(rbm) == 0:
+        out.append(Finding("QC-20", "BLOCKER",
+            msg="REV_BUILD_MAP missing/empty in state.json",
+            fix_hint="SESSION A2 Step 11 must write {segment_name: total_row} mapping"))
+    if not out:
+        out.append(Finding("QC-20", "PASS",
+            msg=f"Revenue_Build forecast cells clean ({len(fcst_cols)} cols scanned, "
+                f"REV_BUILD_MAP has {len(rbm) if isinstance(rbm, dict) else 0} entries)"))
+    return out
+
+
+def qc21_is_revenue_build_link(wb, tabs, xlsx_path=None) -> list[Finding]:
+    """R12 — When REVENUE_BUILD=TRUE, IS forecast Revenue-by-segment cells must reference
+    Revenue_Build, not Assumptions YoY directly.
+
+    Codex B3 fix: segment-to-row mapping is read from explicit
+    `KEY_CELLS_IS["Revenue_segment_rows"]` (set by SESSION B when IS is built).
+    No substring/token heuristic — eliminates false positives on header rows containing
+    segment-name fragments, and language-agnostic (works with 汽车 IS label vs "Auto"
+    REV_BUILD_MAP key as long as SESSION B writes the explicit mapping).
+
+    Skip / block matrix:
+      REVENUE_BUILD unset/false   → PASS skip
+      REVENUE_BUILD invalid       → BLOCKER (surface bad state)
+      REVENUE_BUILD=TRUE, REV_BUILD_MAP empty → BLOCKER
+      REVENUE_BUILD=TRUE, IS sheet absent → PASS skip (IS not built yet)
+      REVENUE_BUILD=TRUE, IS exists, Revenue_segment_rows mapping absent → BLOCKER
+      REVENUE_BUILD=TRUE, mapping present, any segment missing → BLOCKER
+      Each mapped row × forecast col cell → must be string starting with =Revenue_Build!
+    """
+    if state_io is None or xlsx_path is None:
+        return [Finding("QC-21", "PASS", msg="skipped — state_io / xlsx_path required")]
+    try:
+        state = state_io.load_state(xlsx_path)
+    except Exception:
+        return [Finding("QC-21", "PASS", msg="skipped — state.json not loadable")]
+    if not state:
+        return [Finding("QC-21", "PASS", msg="skipped — state empty")]
+    rb_norm = state_io.normalize_revenue_build(state.get("REVENUE_BUILD"))
+    if rb_norm == "INVALID":
+        return [Finding("QC-21", "BLOCKER",
+            msg=f"REVENUE_BUILD={state.get('REVENUE_BUILD')!r} is invalid (expected TRUE/FALSE)",
+            fix_hint="Re-run SESSION A Phase 2.5 to set REVENUE_BUILD to TRUE or FALSE")]
+    if rb_norm != "TRUE":
+        return [Finding("QC-21", "PASS",
+            msg=f"skipped — REVENUE_BUILD={rb_norm}; IS may use Assumptions directly")]
+    if "IS" not in wb.sheetnames:
+        return [Finding("QC-21", "PASS", msg="skipped — IS sheet not built yet")]
+    rbm = state.get("REV_BUILD_MAP")
+    if not isinstance(rbm, dict) or not rbm:
+        return [Finding("QC-21", "BLOCKER",
+            msg="REVENUE_BUILD=TRUE but REV_BUILD_MAP empty",
+            fix_hint="Run SESSION A2 to populate REV_BUILD_MAP")]
+    key_is = state.get("KEY_CELLS_IS") if isinstance(state.get("KEY_CELLS_IS"), dict) else {}
+    seg_rows = key_is.get("Revenue_segment_rows")
+    if not isinstance(seg_rows, dict) or not seg_rows:
+        return [Finding("QC-21", "BLOCKER",
+            msg="KEY_CELLS_IS['Revenue_segment_rows'] missing — SESSION B must register "
+                "{segment_name: is_row_number} when building IS Revenue section",
+            fix_hint="In SESSION B after writing IS Revenue rows, set "
+                "key_cells_is['Revenue_segment_rows'] = {seg: row} and write KEY_CELLS_IS to state")]
+    # Required segments derived from REV_BUILD_MAP, excluding aggregate/reconciliation keys.
+    # Codex round-2 B3 fix: use anchored regex (not prefix-match) so legitimate segments
+    # like "Total Vehicles" are NOT excluded just because they start with "total".
+    required_segs = [k for k in rbm.keys() if not _AGGREGATE_KEY_RE.match(k.strip())]
+    # Also strip trailing " Total" suffix for matching (REV_BUILD_MAP keys are "Auto Total"
+    # whereas Revenue_segment_rows keys typically read "Auto").
+    def _strip_total(s):
+        return re.sub(r"\s+total$", "", s, flags=re.IGNORECASE).strip()
+    missing = []
+    resolved = {}  # {seg_label_in_rbm: is_row}
+    for seg in required_segs:
+        candidates = [seg, _strip_total(seg)]
+        found_row = None
+        for c in candidates:
+            if c in seg_rows:
+                found_row = seg_rows[c]
+                break
+        if found_row is None:
+            missing.append(seg)
+        else:
+            try:
+                resolved[seg] = int(found_row)
+            except (ValueError, TypeError):
+                missing.append(f"{seg} (row value not int: {found_row!r})")
+    if missing:
+        return [Finding("QC-21", "BLOCKER", sheet="IS",
+            msg=f"Revenue_segment_rows missing entries for: {missing}",
+            fix_hint="SESSION B must register every REV_BUILD_MAP non-aggregate segment "
+                "in KEY_CELLS_IS['Revenue_segment_rows']")]
+    col_map = state.get("BS_COL_MAP") if isinstance(state.get("BS_COL_MAP"), dict) else {}
+    fcst_years = state.get("FCST_YEARS") if isinstance(state.get("FCST_YEARS"), list) else []
+    fcst_cols = [_col_idx(col_map, yr) for yr in fcst_years if _col_idx(col_map, yr)]
+    if not fcst_cols:
+        return [Finding("QC-21", "PASS",
+            msg="skipped — no forecast columns resolved")]
+    # Build reverse map: col_idx → period_name, to detect Q vs summary columns.
+    # Q cells must =Revenue_Build!* (R12 strict).
+    # Summary cells (FY / H1 / H2) can be =SUM(Q1:Q4) — any formula accepted.
+    _reverse_col_map = {}
+    for period, col_l in col_map.items():
+        ci = _col_idx(col_map, period)
+        if ci is not None:
+            _reverse_col_map[ci] = period
+    ws_is = wb["IS"]
+    out = []
+    hits = 0
+    checked = 0
+    q_checked = 0
+    fy_checked = 0
+    for seg, is_row in resolved.items():
+        for col in fcst_cols:
+            cell = ws_is.cell(is_row, col)
+            v = cell.value
+            checked += 1
+            col_letter = openpyxl.utils.get_column_letter(col)
+            period_name = _reverse_col_map.get(col, "")
+            is_summary = _is_summary_period(period_name)
+            if is_summary:
+                fy_checked += 1
+            else:
+                q_checked += 1
+            # All forecast cells: blank and hardcode always BLOCKER
+            if v is None:
+                out.append(Finding("QC-21", "BLOCKER", sheet="IS",
+                    cell=f"{col_letter}{is_row}",
+                    msg=f"IS forecast Revenue ({seg}) is blank — must be formula (R12)",
+                    fix_hint=f"Write =Revenue_Build!<col><seg_total_row> (Q col) or =SUM(Q1:Q4) (FY col)"))
+                hits += 1
+            elif isinstance(v, (int, float)):
+                out.append(Finding("QC-21", "BLOCKER", sheet="IS",
+                    cell=f"{col_letter}{is_row}",
+                    msg=f"IS forecast Revenue ({seg}) is hardcoded value {v} — R12 violation",
+                    fix_hint=f"Replace with =Revenue_Build!{col_letter}<seg_total_row>"))
+                hits += 1
+            elif isinstance(v, str):
+                if is_summary:
+                    # Summary columns (FY/H1/H2): accept ANY formula (typically =SUM(Q1:Q4)).
+                    # The Q cells they sum are individually R12-checked.
+                    if not v.strip().startswith("="):
+                        out.append(Finding("QC-21", "BLOCKER", sheet="IS",
+                            cell=f"{col_letter}{is_row}",
+                            msg=f"IS forecast Revenue ({seg}) summary cell = '{v[:40]}' is text constant (must be formula)",
+                            fix_hint="Summary cell should be =SUM(Q1:Q4) or =Revenue_Build!<col><row>"))
+                        hits += 1
+                else:
+                    # Q columns: must reference Revenue_Build (strict R12)
+                    if not _REVENUE_BUILD_REF_RE.match(v):
+                        out.append(Finding("QC-21", "BLOCKER", sheet="IS",
+                            cell=f"{col_letter}{is_row}",
+                            msg=f"IS forecast Revenue ({seg}) Q cell = '{v[:60]}' does not reference Revenue_Build (R12)",
+                            fix_hint=f"When REVENUE_BUILD=TRUE, Q forecast cell must start with '=Revenue_Build!'"))
+                        hits += 1
+            if hits >= 20:
+                out.append(Finding("QC-21", "BLOCKER",
+                    msg=f"...truncated; {hits}+ IS Revenue cells bypass Revenue_Build"))
+                return out
+    if not out:
+        out.append(Finding("QC-21", "PASS",
+            msg=f"IS forecast Revenue rows correctly reference Revenue_Build "
+                f"({len(resolved)} segs × {len(fcst_cols)} fcst cols = {checked} cells: "
+                f"{q_checked} Q-level R12-strict + {fy_checked} FY-level formula-any)"))
+    return out
+
+
+_INLINE_LABEL_RE = re.compile(r"^\s*(↳|->)\s+", re.UNICODE)
+
+
+def qc22_inline_hist_completeness(wb, tabs, xlsx_path=None) -> list[Finding]:
+    """Historical inline ↳ cells must be filled wherever a prior period exists.
+
+    BLOCKER if a ↳ row has a blank historical cell but at least one earlier column
+    in the SAME ↳ row already has a value (proving a prior exists and the ratio is
+    computable). First-period blanks (no earlier data in the row at all) are OK.
+
+    Scans Revenue_Build and IS tabs (wherever ↳ rows appear).
+    """
+    if state_io is None or xlsx_path is None:
+        return [Finding("QC-22", "PASS", msg="skipped — state_io / xlsx_path required")]
+    try:
+        state = state_io.load_state(xlsx_path)
+    except Exception:
+        return [Finding("QC-22", "PASS", msg="skipped — state not loadable")]
+    if not state:
+        return [Finding("QC-22", "PASS", msg="skipped — state empty")]
+    col_map = state.get("BS_COL_MAP") if isinstance(state.get("BS_COL_MAP"), dict) else {}
+    hist_years = state.get("HIST_YEARS") if isinstance(state.get("HIST_YEARS"), list) else []
+    if not hist_years or not col_map:
+        return [Finding("QC-22", "PASS", msg="skipped — no HIST_YEARS or COL_MAP")]
+    hist_cols = [_col_idx(col_map, yr) for yr in hist_years if _col_idx(col_map, yr)]
+    hist_cols_sorted = sorted(hist_cols)
+    if not hist_cols_sorted:
+        return [Finding("QC-22", "PASS", msg="skipped — no historical columns resolved")]
+    # Also check Revenue_Build with its own COL_MAP if present
+    rb_col_map = state.get("REV_BUILD_COL_MAP")
+    if not isinstance(rb_col_map, dict):
+        rb_col_map = col_map
+    rb_hist_cols = sorted([_col_idx(rb_col_map, yr) for yr in hist_years
+                           if _col_idx(rb_col_map, yr)])
+    scan_tabs = []
+    if "Revenue_Build" in wb.sheetnames:
+        scan_tabs.append(("Revenue_Build", wb["Revenue_Build"], rb_hist_cols))
+    if "IS" in wb.sheetnames:
+        scan_tabs.append(("IS", wb["IS"], hist_cols_sorted))
+    if not scan_tabs:
+        return [Finding("QC-22", "PASS", msg="skipped — no Revenue_Build or IS tab")]
+    out = []
+    hits = 0
+    total_checked = 0
+    for tab_name, ws, h_cols in scan_tabs:
+        max_r = min(ws.max_row or 1, 200)
+        for r in range(1, max_r + 1):
+            label = ws.cell(r, 1).value
+            if not isinstance(label, str):
+                continue
+            if not _INLINE_LABEL_RE.match(label):
+                continue
+            # This is a ↳ row. Determine if Q-active or FY/summary-only.
+            # Build reverse map for period classification
+            _rev = {}
+            for period, col_l in (rb_col_map if tab_name == "Revenue_Build" else col_map).items():
+                _ci = _col_idx(rb_col_map if tab_name == "Revenue_Build" else col_map, period)
+                if _ci is not None:
+                    _rev[_ci] = period
+            q_hist = [c for c in h_cols if not _is_summary_period(_rev.get(c, ""))]
+            has_any_hist_q = any(ws.cell(r, c).value is not None for c in q_hist)
+            # Scan same-type columns only: if row has Q data → check Q+FY; if FY-only → check FY only
+            row_vals = [(c, ws.cell(r, c).value) for c in h_cols]
+            seen_any_value = False
+            for c_idx, v in row_vals:
+                is_summary_col = _is_summary_period(_rev.get(c_idx, ""))
+                if v is not None:
+                    seen_any_value = True
+                elif seen_any_value:
+                    # Blank after prior data exists. But skip structural blanks:
+                    # - Q blank in FY-only row → structural → skip
+                    if not is_summary_col and not has_any_hist_q:
+                        total_checked += 1
+                        continue
+                    col_letter = openpyxl.utils.get_column_letter(c_idx)
+                    out.append(Finding("QC-22", "BLOCKER", sheet=tab_name,
+                        cell=f"{col_letter}{r}",
+                        msg=f"historical inline row '{label.strip()[:35]}' has blank cell "
+                            f"but prior period data exists (fill implied ratio)",
+                        fix_hint="Compute implied ratio: =curr/prior-1 (YoY%) or =data/total (%)"))
+                    hits += 1
+                    if hits >= 15:
+                        out.append(Finding("QC-22", "BLOCKER",
+                            msg=f"...truncated; {hits}+ blank historical inline cells"))
+                        return out
+                total_checked += 1
+    if not out:
+        out.append(Finding("QC-22", "PASS",
+            msg=f"historical inline rows complete ({total_checked} cells across {len(scan_tabs)} tabs)"))
+    return out
+
+
 SMOKE_QCS: list[Callable] = [
     qc8_gridlines,
     qc14_a1_unit,
@@ -866,6 +1267,10 @@ FULL_QCS: list[Callable] = [
     qc11_segment_sum,
     qc12_tax_rate,
     qc13_others_historical_source,
+    # R12 — Revenue_Build (conditional, auto-skips if REVENUE_BUILD!=TRUE)
+    qc20_revenue_build_integrity,
+    qc21_is_revenue_build_link,
+    qc22_inline_hist_completeness,
 ]
 
 
